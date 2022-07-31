@@ -16,12 +16,14 @@
 // ---------------------------------------------------------------------------
 
 #include "wx/crt.h"
+#include "wx/log.h"
 #include "wx/utils.h"
 
 #include <string.h>
 
 // prefer snprintf over sprintf
-#if defined(__VISUALC__)
+#if defined(__VISUALC__) || \
+        (defined(__BORLANDC__) && __BORLANDC__ >= 0x540)
     #define system_sprintf(buff, max, flags, data)      \
         ::_snprintf(buff, max, flags, data)
 #elif defined(HAVE_SNPRINTF)
@@ -491,7 +493,10 @@ bool wxPrintfConvSpec<CharType>::Parse(const CharType *format)
         }
 
         if (flagofs == wxMAX_SVNPRINTF_FLAGBUFFER_LEN)
+        {
+            wxLogDebug(wxT("Too many flags specified for a single conversion specifier!"));
             return false;
+        }
     }
     while (!done);
 
@@ -505,6 +510,8 @@ void wxPrintfConvSpec<CharType>::ReplaceAsteriskWith(int width)
 
     // find the first * in our flag buffer
     char *pwidth = strchr(m_szFlags, '*');
+    wxCHECK_RET(pwidth, wxT("field width must be specified"));
+
     // save what follows the * (the +1 is to skip the asterisk itself!)
     strcpy(temp, pwidth+1);
     if (width < 0)
@@ -755,6 +762,7 @@ int wxPrintfConvSpec<CharType>::Process(CharType *buf, size_t lenMax, wxPrintfAr
         case wxPAT_LONGDOUBLE:
         case wxPAT_DOUBLE:
         case wxPAT_POINTER:
+            wxASSERT(lenScratch < wxMAX_SVNPRINTF_SCRATCHBUFFER_LEN);
             // NB: 1) we can compare lenMax (for CharType*, i.e. possibly
             //        wchar_t*) with lenScratch (char*) because this code is
             //        formatting integers and that will have the same length
@@ -833,6 +841,26 @@ struct wxPrintfConvSpecParser
                     if ( nargs++ == wxMAX_SVNPRINTF_ARGUMENTS )
                         break;
 
+                    // TODO: we need to support specifiers of the form "%2$*1$s"
+                    // (this is the same as "%*s") as if any positional arguments
+                    // are used all asterisks must be positional as well but this
+                    // requires a lot of changes in this code (basically we'd need
+                    // to rewrite Parse() to return "*" and conversion itself as
+                    // separate entries)
+                    if ( posarg_present )
+                    {
+                        wxFAIL_MSG
+                        (
+                            wxString::Format
+                            (
+                                "Format string \"%s\" uses both positional "
+                                "parameters and '*' but this is not currently "
+                                "supported by this implementation, sorry.",
+                                fmt
+                            )
+                        );
+                    }
+
                     specs[nargs] = *spec;
 
                     // make an entry for '*' and point to it from pspec
@@ -864,6 +892,24 @@ struct wxPrintfConvSpecParser
 
             if ( nargs++ == wxMAX_SVNPRINTF_ARGUMENTS )
                 break;
+        }
+
+
+        // warn if we lost any arguments (the program probably will crash
+        // anyhow because of stack corruption...)
+        if ( nargs == wxMAX_SVNPRINTF_ARGUMENTS )
+        {
+            wxFAIL_MSG
+            (
+                wxString::Format
+                (
+                    "wxVsnprintf() currently supports only %d arguments, "
+                    "but format string \"%s\" defines more of them.\n"
+                    "You need to change wxMAX_SVNPRINTF_ARGUMENTS and "
+                    "recompile if more are really needed.",
+                    fmt, wxMAX_SVNPRINTF_ARGUMENTS
+                )
+            );
         }
     }
 

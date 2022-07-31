@@ -15,8 +15,12 @@
 
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
 #include "IsoFileFormats.h"
+#include "common/Assertions.h"
+#include "common/Exceptions.h"
+#include "Config.h"
+
+#include "fmt/core.h"
 
 #include <errno.h>
 
@@ -42,7 +46,13 @@ static const char* nameFromType(int type)
 int InputIsoFile::ReadSync(u8* dst, uint lsn)
 {
 	if (lsn >= m_blocks)
+	{
+		std::string msg(fmt::format("isoFile error: Block index is past the end of file! ({} >= {}).", lsn, m_blocks));
+		pxAssertDev(false, msg.c_str());
+		Console.Error(msg.c_str());
 		return -1;
+	}
+
 	return m_reader->ReadSync(dst + m_blockofs, lsn, 1);
 }
 
@@ -54,7 +64,7 @@ void InputIsoFile::BeginRead2(uint lsn)
 	{
 		// While this usually indicates that the ISO is corrupted, some games do attempt
 		// to read past the end of the disc, so don't error here.
-		log_cb(RETRO_LOG_DEBUG, "isoFile error: Block index is past the end of file! (%u >= %u).\n", lsn, m_blocks);
+		Console.WriteLn("isoFile error: Block index is past the end of file! (%u >= %u).", lsn, m_blocks);
 		return;
 	}
 
@@ -186,19 +196,16 @@ void InputIsoFile::_init()
 //
 // Note that this is a member method, and that it will clobber any existing ISO state.
 // (assertions are generated in debug mode if the object state is not already closed).
-bool InputIsoFile::Test(const wxString& srcfile)
+bool InputIsoFile::Test(std::string srcfile)
 {
 	Close();
-	m_filename = srcfile;
-
-	return Open(srcfile, true);
+	return Open(std::move(srcfile), true);
 }
 
-bool InputIsoFile::Open(const wxString& srcfile, bool testOnly)
+bool InputIsoFile::Open(std::string srcfile, bool testOnly)
 {
 	Close();
-	m_filename = srcfile;
-	m_reader = NULL;
+	m_filename = std::move(srcfile);
 
 	bool isBlockdump = false;
 	bool isCompressed = false;
@@ -216,7 +223,8 @@ bool InputIsoFile::Open(const wxString& srcfile, bool testOnly)
 		m_reader = new FlatFileReader(EmuConfig.CdvdShareWrite);
 	}
 
-	m_reader->Open(m_filename);
+	if (!m_reader->Open(m_filename))
+		return false;
 
 	// It might actually be a blockdump file.
 	// Check that before continuing with the FlatFileReader.
@@ -243,8 +251,8 @@ bool InputIsoFile::Open(const wxString& srcfile, bool testOnly)
 
 	if (!detected)
 		throw Exception::BadStream()
-			.SetUserMsg(L"Unrecognized ISO image file format")
-			.SetDiagMsg(L"ISO mounting failed: PCSX2 is unable to identify the ISO image type.");
+			.SetUserMsg("Unrecognized ISO image file format")
+			.SetDiagMsg("ISO mounting failed: PCSX2 is unable to identify the ISO image type.");
 
 	if (!isBlockdump && !isCompressed)
 	{
@@ -254,24 +262,21 @@ bool InputIsoFile::Open(const wxString& srcfile, bool testOnly)
 		m_reader->SetBlockSize(m_blocksize);
 
 		// Returns the original reader if single-part or a Multipart reader otherwise
-		AsyncFileReader* m_reader_old = m_reader;
 		m_reader = MultipartFileReader::DetectMultipart(m_reader);
-		if (m_reader != m_reader_old) // Not the same object the old one need to be deleted
-			delete m_reader_old;
 	}
 
 	m_blocks = m_reader->GetBlockCount();
 
-	log_cb(RETRO_LOG_INFO, "isoFile open ok: %s\n", WX_STR(m_filename));
+	Console.WriteLn(Color_StrongBlue, "isoFile open ok: %s", m_filename.c_str());
 
-	log_cb(RETRO_LOG_INFO, "Image type  = %s\n", nameFromType(m_type));
-#ifndef NDEBUG
-	//log_cb(RETRO_LOG_INFO, "Fileparts   = %u\n", m_numparts); // Pointless print, it's 1 unless it says otherwise above
-	log_cb(RETRO_LOG_DEBUG, "blocks      = %u\n", m_blocks);
-	log_cb(RETRO_LOG_DEBUG, "offset      = %d\n", m_offset);
-	log_cb(RETRO_LOG_DEBUG, "blocksize   = %u\n", m_blocksize);
-	log_cb(RETRO_LOG_DEBUG, "blockoffset = %d\n", m_blockofs);
-#endif
+	ConsoleIndentScope indent;
+
+	Console.WriteLn("Image type  = %s", nameFromType(m_type));
+	//Console.WriteLn("Fileparts   = %u", m_numparts); // Pointless print, it's 1 unless it says otherwise above
+	DevCon.WriteLn("blocks      = %u", m_blocks);
+	DevCon.WriteLn("offset      = %d", m_offset);
+	DevCon.WriteLn("blocksize   = %u", m_blocksize);
+	DevCon.WriteLn("blockoffset = %d", m_blockofs);
 
 	return true;
 }

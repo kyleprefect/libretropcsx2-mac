@@ -15,13 +15,15 @@
 
 #include "PrecompiledHeader.h"
 #include "App.h"
-#include "Utilities/EventSource.inl"
+#include "IniInterface.h"
+#include "common/EventSource.inl"
 
 template class EventSource< IEventListener_CoreThread >;
 template class EventSource< IEventListener_AppStatus >;
 
-AppSettingsEventInfo::AppSettingsEventInfo(AppEventType evt_type )
+AppSettingsEventInfo::AppSettingsEventInfo( IniInterface& ini, AppEventType evt_type )
 	: AppEventInfo( evt_type )
+	, m_ini( ini )
 {
 }
 
@@ -39,25 +41,15 @@ void IEventListener_CoreThread::DispatchEvent( const CoreThreadStatus& status )
 {
 	switch( status )
 	{
-		case CoreThread_Indeterminate:
-			break;
-		case CoreThread_Started:
-			CoreThread_OnStarted();
-			break;
-		case CoreThread_Resumed:
-			CoreThread_OnResumed();
-			break;
-		case CoreThread_Suspended:
-			CoreThread_OnSuspended();
-			break;
-		case CoreThread_Reset:
-			CoreThread_OnReset();
-			break;
-		case CoreThread_Stopped:
-			CoreThread_OnStopped();
-			break;
-		default:
-			break;
+		case CoreThread_Indeterminate: break;
+
+		case CoreThread_Started:	CoreThread_OnStarted();			break;
+		case CoreThread_Resumed:	CoreThread_OnResumed();			break;
+		case CoreThread_Suspended:	CoreThread_OnSuspended();		break;
+		case CoreThread_Reset:		CoreThread_OnReset();			break;
+		case CoreThread_Stopped:	CoreThread_OnStopped();			break;
+		
+		jNO_DEFAULT;
 	}
 }
 
@@ -71,27 +63,60 @@ EventListener_AppStatus::~EventListener_AppStatus()
 	wxGetApp().RemoveListener( this );
 }
 
+void IEventListener_AppStatus::DispatchEvent( const AppEventInfo& evtinfo )
+{
+	switch( evtinfo.evt_type )
+	{
+		case AppStatus_UiSettingsLoaded:
+		case AppStatus_UiSettingsSaved:
+			AppStatusEvent_OnUiSettingsLoadSave( (const AppSettingsEventInfo&)evtinfo );
+		break;
+
+		case AppStatus_VmSettingsLoaded:
+		case AppStatus_VmSettingsSaved:
+			AppStatusEvent_OnVmSettingsLoadSave( (const AppSettingsEventInfo&)evtinfo );
+		break;
+
+		case AppStatus_SettingsApplied:
+			AppStatusEvent_OnSettingsApplied();
+		break;
+
+		case AppStatus_Exiting:
+			AppStatusEvent_OnExit();
+		break;
+	}
+}
+
 void Pcsx2App::DispatchEvent( AppEventType evt )
 {
+	if( !AffinityAssert_AllowFrom_MainUI() ) return;
 	m_evtsrc_AppStatus.Dispatch( AppEventInfo( evt ) );
 }
 
 void Pcsx2App::DispatchEvent( CoreThreadStatus evt )
 {
-	// Clear the sticky key statuses, because hell knows what'll change while the PAD
-	// plugin is suspended.
+	// Clear the sticky key statuses, because hell knows what'll change while PAD
+	// is suspended.
+
+	m_kevt.m_shiftDown		= false;
+	m_kevt.m_controlDown	= false;
+	m_kevt.m_altDown		= false;
+
 	m_evtsrc_CoreThreadStatus.Dispatch( evt );
+	ScopedBusyCursor::SetDefault( Cursor_NotBusy );
 	CoreThread.RethrowException();
 }
 
-void Pcsx2App::DispatchUiSettingsEvent()
+void Pcsx2App::DispatchUiSettingsEvent( IniInterface& ini )
 {
-	m_evtsrc_AppStatus.Dispatch( AppSettingsEventInfo(AppStatus_UiSettingsLoaded ) );
+	if( !AffinityAssert_AllowFrom_MainUI() ) return;
+	m_evtsrc_AppStatus.Dispatch( AppSettingsEventInfo( ini, ini.IsSaving() ? AppStatus_UiSettingsSaved : AppStatus_UiSettingsLoaded ) );
 }
 
-void Pcsx2App::DispatchVmSettingsEvent()
+void Pcsx2App::DispatchVmSettingsEvent( IniInterface& ini )
 {
-	m_evtsrc_AppStatus.Dispatch( AppSettingsEventInfo(AppStatus_VmSettingsLoaded ) );
+	if( !AffinityAssert_AllowFrom_MainUI() ) return;
+	m_evtsrc_AppStatus.Dispatch( AppSettingsEventInfo( ini, ini.IsSaving() ? AppStatus_VmSettingsSaved : AppStatus_VmSettingsLoaded ) );
 }
 
 
@@ -108,4 +133,9 @@ CoreThreadStatusEvent::CoreThreadStatusEvent( CoreThreadStatus evt, SynchronousA
 	: pxActionEvent( sema )
 {
 	m_evt = evt;
+}
+
+void CoreThreadStatusEvent::InvokeEvent()
+{
+	sApp.DispatchEvent( m_evt );
 }

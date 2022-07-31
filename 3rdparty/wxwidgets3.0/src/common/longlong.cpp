@@ -16,6 +16,10 @@
 
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #if wxUSE_LONGLONG
 
 #include "wx/longlong.h"
@@ -41,6 +45,38 @@
 // ----------------------------------------------------------------------------
 // misc
 // ----------------------------------------------------------------------------
+
+void *wxLongLongNative::asArray() const
+{
+    static unsigned char temp[8];
+
+    temp[0] = wx_truncate_cast(unsigned char, ((m_ll >> 56) & 0xFF));
+    temp[1] = wx_truncate_cast(unsigned char, ((m_ll >> 48) & 0xFF));
+    temp[2] = wx_truncate_cast(unsigned char, ((m_ll >> 40) & 0xFF));
+    temp[3] = wx_truncate_cast(unsigned char, ((m_ll >> 32) & 0xFF));
+    temp[4] = wx_truncate_cast(unsigned char, ((m_ll >> 24) & 0xFF));
+    temp[5] = wx_truncate_cast(unsigned char, ((m_ll >> 16) & 0xFF));
+    temp[6] = wx_truncate_cast(unsigned char, ((m_ll >> 8)  & 0xFF));
+    temp[7] = wx_truncate_cast(unsigned char, ((m_ll >> 0)  & 0xFF));
+
+    return temp;
+}
+
+void *wxULongLongNative::asArray() const
+{
+    static unsigned char temp[8];
+
+    temp[0] = wx_truncate_cast(unsigned char, ((m_ll >> 56) & 0xFF));
+    temp[1] = wx_truncate_cast(unsigned char, ((m_ll >> 48) & 0xFF));
+    temp[2] = wx_truncate_cast(unsigned char, ((m_ll >> 40) & 0xFF));
+    temp[3] = wx_truncate_cast(unsigned char, ((m_ll >> 32) & 0xFF));
+    temp[4] = wx_truncate_cast(unsigned char, ((m_ll >> 24) & 0xFF));
+    temp[5] = wx_truncate_cast(unsigned char, ((m_ll >> 16) & 0xFF));
+    temp[6] = wx_truncate_cast(unsigned char, ((m_ll >> 8)  & 0xFF));
+    temp[7] = wx_truncate_cast(unsigned char, ((m_ll >> 0)  & 0xFF));
+
+    return temp;
+}
 
 #if wxUSE_LONGLONG_WX
 wxLongLongNative::wxLongLongNative(wxLongLongWx ll)
@@ -144,6 +180,12 @@ wxLongLongWx& wxLongLongWx::Assign(double d)
         m_lo = (unsigned long)(d - ((double)m_hi * (1.0 + (double)ULONG_MAX)));
     }
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll = (wxLongLong_t)d;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     if ( !positive )
         Negate();
 
@@ -155,6 +197,11 @@ double wxLongLongWx::ToDouble() const
     double d = m_hi;
     d *= 1.0 + (double)ULONG_MAX;
     d += m_lo;
+
+#ifdef wxLONGLONG_TEST_MODE
+    wxASSERT( d == m_ll );
+#endif // wxLONGLONG_TEST_MODE
+
     return d;
 }
 
@@ -163,6 +210,11 @@ double wxULongLongWx::ToDouble() const
     unsigned double d = m_hi;
     d *= 1.0 + (double)ULONG_MAX;
     d += m_lo;
+
+#ifdef wxLONGLONG_TEST_MODE
+    wxASSERT( d == m_ll );
+#endif // wxLONGLONG_TEST_MODE
+
     return d;
 }
 
@@ -199,6 +251,12 @@ wxLongLongWx& wxLongLongWx::operator<<=(int shift)
         }
     }
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll <<= shift;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -218,6 +276,12 @@ wxULongLongWx& wxULongLongWx::operator<<=(int shift)
             m_lo = 0;
         }
     }
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll <<= shift;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -255,6 +319,12 @@ wxLongLongWx& wxLongLongWx::operator>>=(int shift)
         }
     }
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll >>= shift;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -274,6 +344,12 @@ wxULongLongWx& wxULongLongWx::operator>>=(int shift)
             m_hi = 0;
         }
     }
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll >>= shift;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -320,6 +396,12 @@ wxLongLongWx& wxLongLongWx::operator+=(const wxLongLongWx& ll)
     if ((m_lo < previous) || (m_lo < ll.m_lo))
         m_hi++;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll += ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -332,6 +414,12 @@ wxULongLongWx& wxULongLongWx::operator+=(const wxULongLongWx& ll)
 
     if ((m_lo < previous) || (m_lo < ll.m_lo))
         m_hi++;
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll += ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -347,6 +435,12 @@ wxLongLongWx& wxLongLongWx::operator+=(long l)
     if ((m_lo < previous) || (m_lo < (unsigned long)l))
         m_hi++;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll += l;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -359,6 +453,12 @@ wxULongLongWx& wxULongLongWx::operator+=(unsigned long l)
     if ((m_lo < previous) || (m_lo < l))
         m_hi++;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll += l;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -369,6 +469,12 @@ wxLongLongWx& wxLongLongWx::operator++()
     if (m_lo == 0)
         m_hi++;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll++;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -378,6 +484,11 @@ wxULongLongWx& wxULongLongWx::operator++()
     if (m_lo == 0)
         m_hi++;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll++;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -400,6 +511,12 @@ wxLongLongWx& wxLongLongWx::Negate()
     if ( m_lo == 0 )
         m_hi++;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll = -m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -415,6 +532,9 @@ wxLongLongWx wxLongLongWx::operator-(const wxLongLongWx& ll) const
 
 wxLongLongWx wxULongLongWx::operator-(const wxULongLongWx& ll) const
 {
+    wxASSERT(m_hi <= LONG_MAX );
+    wxASSERT(ll.m_hi <= LONG_MAX );
+
     wxLongLongWx res( (long)m_hi , m_lo );
     wxLongLongWx op( (long)ll.m_hi , ll.m_lo );
     res -= op;
@@ -432,6 +552,12 @@ wxLongLongWx& wxLongLongWx::operator-=(const wxLongLongWx& ll)
     if (previous < ll.m_lo)
         m_hi--;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll -= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -445,6 +571,12 @@ wxULongLongWx& wxULongLongWx::operator-=(const wxULongLongWx& ll)
     if (previous < ll.m_lo)
         m_hi--;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll -= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -455,6 +587,12 @@ wxLongLongWx& wxLongLongWx::operator--()
     if (m_lo == 0xFFFFFFFF)
         m_hi--;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll--;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -463,6 +601,12 @@ wxULongLongWx& wxULongLongWx::operator--()
     m_lo--;
     if (m_lo == 0xFFFFFFFF)
         m_hi--;
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll--;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -546,6 +690,12 @@ wxLongLongWx& wxLongLongWx::operator&=(const wxLongLongWx& ll)
     m_lo &= ll.m_lo;
     m_hi &= ll.m_hi;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll &= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -553,6 +703,12 @@ wxULongLongWx& wxULongLongWx::operator&=(const wxULongLongWx& ll)
 {
     m_lo &= ll.m_lo;
     m_hi &= ll.m_hi;
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll &= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -562,6 +718,12 @@ wxLongLongWx& wxLongLongWx::operator|=(const wxLongLongWx& ll)
     m_lo |= ll.m_lo;
     m_hi |= ll.m_hi;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll |= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -569,6 +731,12 @@ wxULongLongWx& wxULongLongWx::operator|=(const wxULongLongWx& ll)
 {
     m_lo |= ll.m_lo;
     m_hi |= ll.m_hi;
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll |= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -578,6 +746,12 @@ wxLongLongWx& wxLongLongWx::operator^=(const wxLongLongWx& ll)
     m_lo ^= ll.m_lo;
     m_hi ^= ll.m_hi;
 
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll ^= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
+
     return *this;
 }
 
@@ -585,6 +759,12 @@ wxULongLongWx& wxULongLongWx::operator^=(const wxULongLongWx& ll)
 {
     m_lo ^= ll.m_lo;
     m_hi ^= ll.m_hi;
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll ^= ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -624,6 +804,11 @@ wxLongLongWx& wxLongLongWx::operator*=(const wxLongLongWx& ll)
 
     m_hi = m_lo = 0;
 
+#ifdef wxLONGLONG_TEST_MODE
+    wxLongLong_t llOld = m_ll;
+    m_ll = 0;
+#endif // wxLONGLONG_TEST_MODE
+
     int counter = 0;
     do
     {
@@ -634,6 +819,12 @@ wxLongLongWx& wxLongLongWx::operator*=(const wxLongLongWx& ll)
         counter++;
     }
     while ((counter < 64) && ((q.m_hi != 0) || (q.m_lo != 0)));
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll = llOld * ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -645,6 +836,11 @@ wxULongLongWx& wxULongLongWx::operator*=(const wxULongLongWx& ll)
 
     m_hi = m_lo = 0;
 
+#ifdef wxLONGLONG_TEST_MODE
+    wxULongLong_t llOld = m_ll;
+    m_ll = 0;
+#endif // wxLONGLONG_TEST_MODE
+
     int counter = 0;
     do
     {
@@ -655,6 +851,12 @@ wxULongLongWx& wxULongLongWx::operator*=(const wxULongLongWx& ll)
         counter++;
     }
     while ((counter < 64) && ((q.m_hi != 0) || (q.m_lo != 0)));
+
+#ifdef wxLONGLONG_TEST_MODE
+    m_ll = llOld * ll.m_ll;
+
+    Check();
+#endif // wxLONGLONG_TEST_MODE
 
     return *this;
 }
@@ -935,6 +1137,40 @@ wxULongLongWx wxULongLongWx::operator%(const wxULongLongWx& ll) const
 // ----------------------------------------------------------------------------
 // misc
 // ----------------------------------------------------------------------------
+
+// temporary - just for testing
+void *wxLongLongWx::asArray(void) const
+{
+    static unsigned char temp[8];
+
+    temp[0] = (char)((m_hi >> 24) & 0xFF);
+    temp[1] = (char)((m_hi >> 16) & 0xFF);
+    temp[2] = (char)((m_hi >> 8)  & 0xFF);
+    temp[3] = (char)((m_hi >> 0)  & 0xFF);
+    temp[4] = (char)((m_lo >> 24) & 0xFF);
+    temp[5] = (char)((m_lo >> 16) & 0xFF);
+    temp[6] = (char)((m_lo >> 8)  & 0xFF);
+    temp[7] = (char)((m_lo >> 0)  & 0xFF);
+
+    return temp;
+}
+
+void *wxULongLongWx::asArray(void) const
+{
+    static unsigned char temp[8];
+
+    temp[0] = (char)((m_hi >> 24) & 0xFF);
+    temp[1] = (char)((m_hi >> 16) & 0xFF);
+    temp[2] = (char)((m_hi >> 8)  & 0xFF);
+    temp[3] = (char)((m_hi >> 0)  & 0xFF);
+    temp[4] = (char)((m_lo >> 24) & 0xFF);
+    temp[5] = (char)((m_lo >> 16) & 0xFF);
+    temp[6] = (char)((m_lo >> 8)  & 0xFF);
+    temp[7] = (char)((m_lo >> 0)  & 0xFF);
+
+    return temp;
+}
+
 #endif // wxUSE_LONGLONG_WX
 
 #define LL_TO_STRING(name)                                           \

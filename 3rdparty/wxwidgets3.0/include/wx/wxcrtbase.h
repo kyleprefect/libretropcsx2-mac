@@ -37,8 +37,12 @@
 #include <wctype.h>
 #include <time.h>
 
-#if defined(__WINDOWS__)
+#if defined(__WINDOWS__) && !defined(__WXWINCE__)
     #include <io.h>
+#endif
+
+#if defined(HAVE_STRTOK_R) && defined(__DARWIN__) && defined(_MSL_USING_MW_C_HEADERS) && _MSL_USING_MW_C_HEADERS
+    char *strtok_r(char *, const char *, char **);
 #endif
 
 /*
@@ -80,6 +84,15 @@
     #endif
 #endif /* _WIN32_WCE */
 
+/* string.h functions */
+#ifndef strdup
+    #if defined(__WXWINCE__)
+        #if _WIN32_WCE <= 211
+            #define wxNEED_STRDUP
+        #endif
+    #endif
+#endif /* strdup */
+
 #ifdef wxNEED_STRDUP
     WXDLLIMPEXP_BASE char *strdup(const char* s);
 #endif
@@ -90,6 +103,27 @@
 WXDLLIMPEXP_BASE void *calloc( size_t num, size_t size );
 #endif
 #endif /* _WIN32_WCE */
+
+
+/* -------------------------------------------------------------------------
+                            UTF-8 locale handling
+   ------------------------------------------------------------------------- */
+
+#ifdef __cplusplus
+    #if wxUSE_UNICODE_UTF8
+        /* flag indicating whether the current locale uses UTF-8 or not; must be
+           updated every time the locale is changed! */
+        #if wxUSE_UTF8_LOCALE_ONLY
+        #define wxLocaleIsUtf8 true
+        #else
+        extern WXDLLIMPEXP_BASE bool wxLocaleIsUtf8;
+        #endif
+        /* function used to update the flag: */
+        extern WXDLLIMPEXP_BASE void wxUpdateLocaleIsUtf8();
+    #else /* !wxUSE_UNICODE_UTF8 */
+        inline void wxUpdateLocaleIsUtf8() {}
+    #endif /* wxUSE_UNICODE_UTF8/!wxUSE_UNICODE_UTF8 */
+#endif /* __cplusplus */
 
 
 /* -------------------------------------------------------------------------
@@ -123,11 +157,14 @@ WXDLLIMPEXP_BASE void *calloc( size_t num, size_t size );
 #define wxCRT_StrspnW    wcsspn
 #define wxCRT_StrstrW    wcsstr
 
-#define wxCRT_StrcollA   strcoll
-#define wxCRT_StrxfrmA   strxfrm
+/* these functions are not defined under CE, at least in VC8 CRT */
+#if !defined(__WXWINCE__)
+    #define wxCRT_StrcollA   strcoll
+    #define wxCRT_StrxfrmA   strxfrm
 
-#define wxCRT_StrcollW   wcscoll
-#define wxCRT_StrxfrmW   wcsxfrm
+    #define wxCRT_StrcollW   wcscoll
+    #define wxCRT_StrxfrmW   wcsxfrm
+#endif /* __WXWINCE__ */
 
 /* Almost all compilers have strdup(), but VC++ and MinGW call it _strdup().
    And it's not available in MinGW strict ANSI mode nor under Windows CE. */
@@ -137,7 +174,7 @@ WXDLLIMPEXP_BASE void *calloc( size_t num, size_t size );
     #ifndef __WX_STRICT_ANSI_GCC__
         #define wxCRT_StrdupA _strdup
     #endif
-#else
+#elif !defined(__WXWINCE__)
     #define wxCRT_StrdupA strdup
 #endif
 
@@ -168,7 +205,7 @@ WXDLLIMPEXP_BASE void *calloc( size_t num, size_t size );
 #define wxCRT_StrtoulW   wcstoul
 
 #ifdef __VISUALC__
-    #if __VISUALC__ >= 1300
+    #if __VISUALC__ >= 1300 && !defined(__WXWINCE__)
         #define wxCRT_StrtollA   _strtoi64
         #define wxCRT_StrtoullA  _strtoui64
         #define wxCRT_StrtollW   _wcstoi64
@@ -209,7 +246,12 @@ WXDLLIMPEXP_BASE void *calloc( size_t num, size_t size );
 
 /* define wxCRT_StricmpA/W and wxCRT_StrnicmpA/W for various compilers */
 
-#if defined(__SYMANTEC__) || (defined(__VISUALC__))
+#if defined(__BORLANDC__) || defined(__WATCOMC__) || \
+        defined(__VISAGECPP__) || \
+        defined(__EMX__) || defined(__DJGPP__)
+    #define wxCRT_StricmpA stricmp
+    #define wxCRT_StrnicmpA strnicmp
+#elif defined(__SYMANTEC__) || (defined(__VISUALC__) && !defined(__WXWINCE__))
     #define wxCRT_StricmpA _stricmp
     #define wxCRT_StrnicmpA _strnicmp
 #elif defined(__UNIX__) || (defined(__GNUWIN32__) && !defined(__WX_STRICT_ANSI_GCC__))
@@ -230,6 +272,11 @@ WXDLLIMPEXP_BASE void *calloc( size_t num, size_t size );
     #endif
 /* #else -- use wxWidgets implementation */
 #endif
+
+#ifdef HAVE_STRTOK_R
+    #define  wxCRT_StrtokA(str, sep, last)    strtok_r(str, sep, last)
+#endif
+/* FIXME-UTF8: detect and use wcstok() if available for wxCRT_StrtokW */
 
 /* these are extern "C" because they are used by regex lib: */
 #ifdef __cplusplus
@@ -349,6 +396,14 @@ WXDLLIMPEXP_BASE int wxCRT_StrnicmpA(const char *psz1, const char *psz2, size_t 
 WXDLLIMPEXP_BASE int wxCRT_StrnicmpW(const wchar_t *psz1, const wchar_t *psz2, size_t len);
 #endif
 
+#ifndef wxCRT_StrtokA
+WXDLLIMPEXP_BASE char *wxCRT_StrtokA(char *psz, const char *delim, char **save_ptr);
+#endif
+
+#ifndef wxCRT_StrtokW
+WXDLLIMPEXP_BASE wchar_t *wxCRT_StrtokW(wchar_t *psz, const wchar_t *delim, wchar_t **save_ptr);
+#endif
+
 /* supply strtoll and strtoull, if needed */
 #ifdef wxLongLong_t
     #ifndef wxCRT_StrtollA
@@ -393,31 +448,114 @@ WXDLLIMPEXP_BASE int wxCRT_StrnicmpW(const wchar_t *psz1, const wchar_t *psz2, s
 #else /* Unicode filenames */
     /* special case: these functions are missing under Win9x with Unicows so we
        have to implement them ourselves */
+    #if wxUSE_UNICODE_MSLU
+            WXDLLIMPEXP_BASE FILE* wxMSLU__wfopen(const wchar_t *name, const wchar_t *mode);
+            WXDLLIMPEXP_BASE FILE* wxMSLU__wfreopen(const wchar_t *name, const wchar_t *mode, FILE *stream);
+            WXDLLIMPEXP_BASE int wxMSLU__wrename(const wchar_t *oldname, const wchar_t *newname);
+            WXDLLIMPEXP_BASE int wxMSLU__wremove(const wchar_t *name);
+            #define wxCRT_Fopen     wxMSLU__wfopen
+            #define wxCRT_Freopen   wxMSLU__wfreopen
+            #define wxCRT_Remove    wxMSLU__wremove
+            #define wxCRT_Rename    wxMSLU__wrename
+    #else
         wxDECL_FOR_STRICT_MINGW32(FILE*, _wfopen, (const wchar_t*, const wchar_t*))
         wxDECL_FOR_STRICT_MINGW32(FILE*, _wfreopen, (const wchar_t*, const wchar_t*, FILE*))
         wxDECL_FOR_STRICT_MINGW32(int, _wrename, (const wchar_t*, const wchar_t*))
         wxDECL_FOR_STRICT_MINGW32(int, _wremove, (const wchar_t*))
 
-	#define wxCRT_Rename   _wrename
-	#define wxCRT_Remove _wremove
+        /* WinCE CRT doesn't provide these functions so use our own */
+        #ifdef __WXWINCE__
+            WXDLLIMPEXP_BASE int wxCRT_Rename(const wchar_t *src,
+                                              const wchar_t *dst);
+            WXDLLIMPEXP_BASE int wxCRT_Remove(const wchar_t *path);
+        #else
+            #define wxCRT_Rename   _wrename
+            #define wxCRT_Remove _wremove
+        #endif
         #define wxCRT_Fopen    _wfopen
         #define wxCRT_Freopen  _wfreopen
+    #endif
 
 #endif /* wxMBFILES/!wxMBFILES */
+
+#define wxCRT_PutsA       puts
+#define wxCRT_FputsA      fputs
+#define wxCRT_FgetsA      fgets
+#define wxCRT_FputcA      fputc
+#define wxCRT_FgetcA      fgetc
+#define wxCRT_UngetcA     ungetc
+
+#ifdef wxHAVE_TCHAR_SUPPORT
+    #define wxCRT_PutsW   _putws
+    #define wxCRT_FputsW  fputws
+    #define wxCRT_FputcW  fputwc
+#endif
+#ifdef HAVE_FPUTWS
+    #define wxCRT_FputsW  fputws
+#endif
+#ifdef HAVE_PUTWS
+    #define wxCRT_PutsW   putws
+#endif
+#ifdef HAVE_FPUTWC
+    #define wxCRT_FputcW  fputwc
+#endif
+#define wxCRT_FgetsW  fgetws
+
+#ifndef wxCRT_PutsW
+WXDLLIMPEXP_BASE int wxCRT_PutsW(const wchar_t *ws);
+#endif
+
+#ifndef wxCRT_FputsW
+WXDLLIMPEXP_BASE int wxCRT_FputsW(const wchar_t *ch, FILE *stream);
+#endif
+
+#ifndef wxCRT_FputcW
+WXDLLIMPEXP_BASE int wxCRT_FputcW(wchar_t wc, FILE *stream);
+#endif
+
+/*
+   NB: tmpnam() is unsafe and thus is not wrapped!
+       Use other wxWidgets facilities instead:
+        wxFileName::CreateTempFileName, wxTempFile, or wxTempFileOutputStream
+*/
+#define wxTmpnam(x)         wxTmpnam_is_insecure_use_wxTempFile_instead
+
+/* FIXME-CE: provide our own perror() using ::GetLastError() */
+#ifndef __WXWINCE__
+
+#define wxCRT_PerrorA   perror
+#ifdef wxHAVE_TCHAR_SUPPORT
+    #define wxCRT_PerrorW _wperror
+#endif
+
+#endif /* !__WXWINCE__ */
 
 /* -------------------------------------------------------------------------
                                   stdlib.h
    ------------------------------------------------------------------------- */
 
-#define wxCRT_GetenvA           getenv
-#ifdef _tgetenv
-#define wxCRT_GetenvW       _wgetenv
+/* there are no env vars at all under CE, so no _tgetenv neither */
+#ifdef __WXWINCE__
+    /* can't define as inline function as this is a C file... */
+    #define wxCRT_GetenvA(name)     (name, NULL)
+    #define wxCRT_GetenvW(name)     (name, NULL)
+#else
+    #define wxCRT_GetenvA           getenv
+    #ifdef _tgetenv
+        #define wxCRT_GetenvW       _wgetenv
+    #endif
 #endif
 
 #ifndef wxCRT_GetenvW
 WXDLLIMPEXP_BASE wchar_t * wxCRT_GetenvW(const wchar_t *name);
 #endif
 
+
+#define wxCRT_SystemA               system
+/* mingw32 doesn't provide _tsystem() or _wsystem(): */
+#if defined(_tsystem)
+    #define  wxCRT_SystemW          _wsystem
+#endif
 
 #define wxCRT_AtofA                 atof
 #define wxCRT_AtoiA                 atoi
@@ -428,7 +566,9 @@ WXDLLIMPEXP_BASE wchar_t * wxCRT_GetenvW(const wchar_t *name);
     #define  wxCRT_AtolW           _wtol
     /* _wtof doesn't exist */
 #else
+#ifndef __VMS
     #define wxCRT_AtofW(s)         wcstod(s, NULL)
+#endif
     #define wxCRT_AtolW(s)         wcstol(s, NULL, 10)
     /* wcstoi doesn't exist */
 #endif
@@ -438,8 +578,35 @@ WXDLLIMPEXP_BASE wchar_t * wxCRT_GetenvW(const wchar_t *name);
    ------------------------------------------------------------------------- */
 
 #define wxCRT_StrftimeA  strftime
-#if defined(HAVE_WCSFTIME) || !defined(__UNIX__)
-#define wxCRT_StrftimeW  wcsftime
+#ifdef __SGI__
+    /*
+        IRIX provides not one but two versions of wcsftime(): XPG4 one which
+        uses "const char*" for the third parameter and so can't be used and the
+        correct, XPG5, one. Unfortunately we can't just define _XOPEN_SOURCE
+        high enough to get XPG5 version as this undefines other symbols which
+        make other functions we use unavailable (see <standards.h> for gory
+        details). So just declare the XPG5 version ourselves, we're extremely
+        unlikely to ever be compiled on a system without it. But if we ever do,
+        a configure test would need to be added for it (and _MIPS_SYMBOL_PRESENT
+        should be used to check for its presence during run-time, i.e. it would
+        probably be simpler to just always use our own wxCRT_StrftimeW() below
+        if it does ever become a problem).
+     */
+#ifdef __cplusplus
+    extern "C"
+#endif
+    size_t
+    _xpg5_wcsftime(wchar_t *, size_t, const wchar_t *, const struct tm * );
+    #define wxCRT_StrftimeW _xpg5_wcsftime
+#else
+    /*
+        Assume it's always available under non-Unix systems as this does seem
+        to be the case for now. And under Unix we trust configure to detect it
+        (except for SGI special case above).
+     */
+    #if defined(HAVE_WCSFTIME) || !defined(__UNIX__)
+        #define wxCRT_StrftimeW  wcsftime
+    #endif
 #endif
 
 #ifndef wxCRT_StrftimeW
@@ -454,7 +621,11 @@ WXDLLIMPEXP_BASE size_t wxCRT_StrftimeW(wchar_t *s, size_t max,
                                 ctype.h
    ------------------------------------------------------------------------- */
 
-#define WXWCHAR_T_CAST(c) c
+#ifdef __WATCOMC__
+  #define WXWCHAR_T_CAST(c) (wint_t)(c)
+#else
+  #define WXWCHAR_T_CAST(c) c
+#endif
 
 #define wxCRT_IsalnumW(c)   iswalnum(WXWCHAR_T_CAST(c))
 #define wxCRT_IsalphaW(c)   iswalpha(WXWCHAR_T_CAST(c))

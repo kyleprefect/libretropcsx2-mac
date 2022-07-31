@@ -37,21 +37,33 @@ bool wxMutex::IsOk() const
 
 wxMutexError wxMutex::Lock()
 {
+    wxCHECK_MSG( m_internal, wxMUTEX_INVALID,
+                 wxT("wxMutex::Lock(): not initialized") );
+
     return m_internal->Lock();
 }
 
 wxMutexError wxMutex::LockTimeout(unsigned long ms)
 {
+    wxCHECK_MSG( m_internal, wxMUTEX_INVALID,
+                 wxT("wxMutex::Lock(): not initialized") );
+
     return m_internal->Lock(ms);
 }
 
 wxMutexError wxMutex::TryLock()
 {
+    wxCHECK_MSG( m_internal, wxMUTEX_INVALID,
+                 wxT("wxMutex::TryLock(): not initialized") );
+
     return m_internal->TryLock();
 }
 
 wxMutexError wxMutex::Unlock()
 {
+    wxCHECK_MSG( m_internal, wxMUTEX_INVALID,
+                 wxT("wxMutex::Unlock(): not initialized") );
+
     return m_internal->Unlock();
 }
 
@@ -63,7 +75,7 @@ wxMutexError wxMutex::Unlock()
 // variables and their events/event semaphores have quite different semantics,
 // so we reimplement the conditions from scratch using the mutexes and
 // semaphores
-#if defined(__WINDOWS__)
+#if defined(__WINDOWS__) || defined(__OS2__) || defined(__EMX__)
 
 class wxConditionInternal
 {
@@ -210,7 +222,7 @@ wxCondError wxConditionInternal::Broadcast()
     return wxCOND_NO_ERROR;
 }
 
-#endif // __WINDOWS__
+#endif // __WINDOWS__ || __OS2__ || __EMX__
 
 // ----------------------------------------------------------------------------
 // wxCondition
@@ -239,21 +251,33 @@ bool wxCondition::IsOk() const
 
 wxCondError wxCondition::Wait()
 {
+    wxCHECK_MSG( m_internal, wxCOND_INVALID,
+                 wxT("wxCondition::Wait(): not initialized") );
+
     return m_internal->Wait();
 }
 
 wxCondError wxCondition::WaitTimeout(unsigned long milliseconds)
 {
+    wxCHECK_MSG( m_internal, wxCOND_INVALID,
+                 wxT("wxCondition::Wait(): not initialized") );
+
     return m_internal->WaitTimeout(milliseconds);
 }
 
 wxCondError wxCondition::Signal()
 {
+    wxCHECK_MSG( m_internal, wxCOND_INVALID,
+                 wxT("wxCondition::Signal(): not initialized") );
+
     return m_internal->Signal();
 }
 
 wxCondError wxCondition::Broadcast()
 {
+    wxCHECK_MSG( m_internal, wxCOND_INVALID,
+                 wxT("wxCondition::Broadcast(): not initialized") );
+
     return m_internal->Broadcast();
 }
 
@@ -283,21 +307,33 @@ bool wxSemaphore::IsOk() const
 
 wxSemaError wxSemaphore::Wait()
 {
+    wxCHECK_MSG( m_internal, wxSEMA_INVALID,
+                 wxT("wxSemaphore::Wait(): not initialized") );
+
     return m_internal->Wait();
 }
 
 wxSemaError wxSemaphore::TryWait()
 {
+    wxCHECK_MSG( m_internal, wxSEMA_INVALID,
+                 wxT("wxSemaphore::TryWait(): not initialized") );
+
     return m_internal->TryWait();
 }
 
 wxSemaError wxSemaphore::WaitTimeout(unsigned long milliseconds)
 {
+    wxCHECK_MSG( m_internal, wxSEMA_INVALID,
+                 wxT("wxSemaphore::WaitTimeout(): not initialized") );
+
     return m_internal->WaitTimeout(milliseconds);
 }
 
 wxSemaError wxSemaphore::Post()
 {
+    wxCHECK_MSG( m_internal, wxSEMA_INVALID,
+                 wxT("wxSemaphore::Post(): not initialized") );
+
     return m_internal->Post();
 }
 

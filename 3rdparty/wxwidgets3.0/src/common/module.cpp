@@ -11,10 +11,16 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #include "wx/module.h"
 
 #ifndef WX_PRECOMP
     #include "wx/hash.h"
+    #include "wx/intl.h"
+    #include "wx/log.h"
 #endif
 
 #include "wx/listimpl.cpp"
@@ -52,6 +58,8 @@ void wxModule::RegisterModules()
         if ( classInfo->IsKindOf(wxCLASSINFO(wxModule)) &&
              (classInfo != (& (wxModule::ms_classInfo))) )
         {
+            wxLogTrace(TRACE_MODULE, wxT("Registering module %s"),
+                       classInfo->GetClassName());
             wxModule* module = (wxModule *)classInfo->CreateObject();
             wxModule::RegisterModule(module);
         }
@@ -62,9 +70,17 @@ bool wxModule::DoInitializeModule(wxModule *module,
                                   wxModuleList &initializedModules)
 {
     if ( module->m_state == State_Initializing )
+    {
+        wxLogError(_("Circular dependency involving module \"%s\" detected."),
+                   module->GetClassInfo()->GetClassName());
         return false;
+    }
 
     module->m_state = State_Initializing;
+
+    // translate named dependencies to the normal ones first
+    if ( !module->ResolveNamedDependencies() )
+      return false;
 
     const wxArrayClassInfo& dependencies = module->m_dependencies;
 
@@ -104,11 +120,23 @@ bool wxModule::DoInitializeModule(wxModule *module,
         }
 
         if ( !node )
+        {
+            wxLogError(_("Dependency \"%s\" of module \"%s\" doesn't exist."),
+                       cinfo->GetClassName(),
+                       module->GetClassInfo()->GetClassName());
             return false;
+        }
     }
 
     if ( !module->Init() )
+    {
+        wxLogError(_("Module \"%s\" initialization failed"),
+                   module->GetClassInfo()->GetClassName());
         return false;
+    }
+
+    wxLogTrace(TRACE_MODULE, wxT("Module \"%s\" initialized"),
+               module->GetClassInfo()->GetClassName());
 
     module->m_state = State_Initialized;
     initializedModules.Append(module);
@@ -157,11 +185,40 @@ void wxModule::DoCleanUpModules(const wxModuleList& modules)
           node;
           node = node->GetPrevious() )
     {
+        wxLogTrace(TRACE_MODULE, wxT("Cleanup module %s"),
+                   node->GetData()->GetClassInfo()->GetClassName());
+
         wxModule * module = node->GetData();
+
+        wxASSERT_MSG( module->m_state == State_Initialized,
+                        wxT("not initialized module being cleaned up") );
+
         module->Exit();
         module->m_state = State_Registered;
     }
 
     // clear all modules, even the non-initialized ones
     WX_CLEAR_LIST(wxModuleList, m_modules);
+}
+
+bool wxModule::ResolveNamedDependencies()
+{
+    // first resolve required dependencies
+    for ( size_t i = 0; i < m_namedDependencies.size(); ++i )
+    {
+        wxClassInfo *info = wxClassInfo::FindClass(m_namedDependencies[i]);
+
+        if ( !info )
+        {
+            // required dependency not found
+            return false;
+        }
+
+        // add it even if it is not derived from wxModule because
+        // DoInitializeModule() will make sure a module with the same class
+        // info exists and fail if it doesn't
+        m_dependencies.Add(info);
+    }
+
+    return true;
 }

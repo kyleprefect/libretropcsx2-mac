@@ -21,7 +21,7 @@
 
 #include "vtlb.h"
 
-#include "x86emitter/x86_intrin.h"
+#include "common/emitter/x86_intrin.h"
 
 // [TODO] This *could* be replaced with an assignment operator on u128 that implicitly
 // uses _mm_store and _mm_load internally.  However, there are alignment concerns --
@@ -107,9 +107,14 @@ static __fi void ZeroQWC( u128& dest )
 #define psSu128(mem)	(*(u128*)&eeMem->Scratch[(mem) & 0x3fff])
 
 
+extern void memSetKernelMode();
+//extern void memSetSupervisorMode();
+extern void memSetUserMode();
 extern void memSetPageAddr(u32 vaddr, u32 paddr);
 extern void memClearPageAddr(u32 vaddr);
 extern void memBindConditionalHandlers();
+
+extern void memMapVUmicro();
 
 enum vtlb_ProtectionMode
 {
@@ -131,13 +136,16 @@ extern void mmap_ResetBlockTracking();
 #define memWrite16 vtlb_memWrite<mem16_t>
 #define memWrite32 vtlb_memWrite<mem32_t>
 
-static __fi void memRead64(u32 mem, mem64_t* out)	{ vtlb_memRead64(mem, out); }
-static __fi void memRead64(u32 mem, mem64_t& out)	{ vtlb_memRead64(mem, &out); }
+static __fi void memRead64(u32 mem, mem64_t* out)	{ _mm_storel_epi64((__m128i*)out, vtlb_memRead64(mem)); }
+static __fi void memRead64(u32 mem, mem64_t& out)	{ memRead64(mem, &out); }
 
-static __fi void memRead128(u32 mem, mem128_t* out) { vtlb_memRead128(mem, out); }
-static __fi void memRead128(u32 mem, mem128_t& out) { vtlb_memRead128(mem, &out); }
+static __fi void memRead128(u32 mem, mem128_t* out) { _mm_store_si128((__m128i*)out, vtlb_memRead128(mem)); }
+static __fi void memRead128(u32 mem, mem128_t& out) { memRead128(mem, &out); }
 
 static __fi void memWrite64(u32 mem, const mem64_t* val)	{ vtlb_memWrite64(mem, val); }
 static __fi void memWrite64(u32 mem, const mem64_t& val)	{ vtlb_memWrite64(mem, &val); }
 static __fi void memWrite128(u32 mem, const mem128_t* val)	{ vtlb_memWrite128(mem, val); }
 static __fi void memWrite128(u32 mem, const mem128_t& val)	{ vtlb_memWrite128(mem, &val); }
+
+
+extern u16 ba0R16(u32 mem);

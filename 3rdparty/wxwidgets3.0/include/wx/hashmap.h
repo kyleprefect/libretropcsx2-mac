@@ -27,9 +27,46 @@
     #define HAVE_STL_HASH_MAP
 #endif
 
+#if wxUSE_STD_CONTAINERS && \
+    (defined(HAVE_STD_UNORDERED_MAP) || defined(HAVE_TR1_UNORDERED_MAP))
+
+#if defined(HAVE_STD_UNORDERED_MAP)
+    #include <unordered_map>
+    #define WX_HASH_MAP_NAMESPACE std
+#elif defined(HAVE_TR1_UNORDERED_MAP)
+    #include <tr1/unordered_map>
+    #define WX_HASH_MAP_NAMESPACE std::tr1
+#endif
+
+#define _WX_DECLARE_HASH_MAP( KEY_T, VALUE_T, HASH_T, KEY_EQ_T, CLASSNAME, CLASSEXP ) \
+    typedef WX_HASH_MAP_NAMESPACE::unordered_map< KEY_T, VALUE_T, HASH_T, KEY_EQ_T > CLASSNAME
+
+#elif wxUSE_STD_CONTAINERS && defined(HAVE_STL_HASH_MAP)
+
+#if defined(HAVE_EXT_HASH_MAP)
+    #include <ext/hash_map>
+#elif defined(HAVE_HASH_MAP)
+    #include <hash_map>
+#endif
+
+#if defined(HAVE_GNU_CXX_HASH_MAP)
+    #define WX_HASH_MAP_NAMESPACE __gnu_cxx
+#elif defined(HAVE_STD_HASH_MAP)
+    #define WX_HASH_MAP_NAMESPACE std
+#endif
+
+#define _WX_DECLARE_HASH_MAP( KEY_T, VALUE_T, HASH_T, KEY_EQ_T, CLASSNAME, CLASSEXP ) \
+    typedef WX_HASH_MAP_NAMESPACE::hash_map< KEY_T, VALUE_T, HASH_T, KEY_EQ_T > CLASSNAME
+
+#else // !wxUSE_STD_CONTAINERS || no std::{hash,unordered}_map class available
+
 #define wxNEEDS_WX_HASH_MAP
 
+#ifdef __WXWINCE__
+typedef int ptrdiff_t;
+#else
 #include <stddef.h>             // for ptrdiff_t
+#endif
 
 // private
 struct WXDLLIMPEXP_BASE _wxHashTable_NodeBase
@@ -432,6 +469,8 @@ inline bool grow_lf70( size_t buckets, size_t items )
     return float(items)/float(buckets) >= 0.85f;
 }
 
+#endif // various hash map implementations
+
 // ----------------------------------------------------------------------------
 // hashing and comparison functors
 // ----------------------------------------------------------------------------
@@ -556,6 +595,15 @@ struct WXDLLIMPEXP_BASE wxStringHash
         { return stringHash( x ); }
     unsigned long operator()( const char* x ) const
         { return stringHash( x ); }
+
+#if WXWIN_COMPATIBILITY_2_8
+    static unsigned long wxCharStringHash( const wxChar* x )
+        { return stringHash(x); }
+    #if wxUSE_UNICODE
+    static unsigned long charStringHash( const char* x )
+        { return stringHash(x); }
+    #endif
+#endif // WXWIN_COMPATIBILITY_2_8
 
     static unsigned long stringHash( const wchar_t* );
     static unsigned long stringHash( const char* );

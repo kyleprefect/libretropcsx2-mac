@@ -1,5 +1,5 @@
 /*  PCSX2 - PS2 Emulator for PCs
- *  Copyright (C) 2002-2010  PCSX2 Dev Team
+ *  Copyright (C) 2002-2021  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -15,24 +15,55 @@
 
 #pragma once
 
-#define FREEZE_LOAD 0
-#define FREEZE_SAVE 1
-#define FREEZE_SIZE 2
+#include <vector>
 
-#include "PS2Edefs.h"
 #include "System.h"
+#include "common/Exceptions.h"
+
+enum class FreezeAction
+{
+	Load,
+	Save,
+	Size,
+};
 
 // Savestate Versioning!
-//  If you make changes to the savestate version, please increment the value below.
-//  If the change is minor and compatibility with old states is retained, increment
-//  the lower 16 bit value.  IF the change is breaking of all compatibility with old
-//  states, increment the upper 16 bit value, and clear the lower 16 bits to 0.
 
-static const u32 g_SaveVersion = (0x9A2A << 16) | 0x0000;
+// NOTICE: When updating g_SaveVersion, please make sure you add the following line to your commit message somewhere:
+// [SAVEVERSION+]
+// This informs the auto updater that the users savestates will be invalidated.
 
-// this function is meant to be used in the place of GSfreeze, and provides a safe layer
-// between the GS saving function and the MTGS's needs. :)
-extern s32 CALLBACK gsSafeFreeze( int mode, freezeData *data );
+static const u32 g_SaveVersion = (0x9A2D << 16) | 0x0000;
+
+
+// the freezing data between submodules and core
+// an interesting thing to note is that this dates back from before plugin
+// merges and was used to pass data between plugins and cores, although the
+// struct was system dependant as the size of int differs between systems, thus
+// subsystems making use of freezeData, like GSDump and save states aren't
+// necessarily portable; we might want to investigate this in the future -- govanify
+struct freezeData
+{
+    int size;
+    u8 *data;
+};
+
+struct SaveStateScreenshotData
+{
+	u32 width;
+	u32 height;
+	std::vector<u32> pixels;
+};
+
+class ArchiveEntryList;
+
+// Wrappers to generate a save state compatible across all frontends.
+// These functions assume that the caller has paused the core thread.
+extern std::unique_ptr<ArchiveEntryList> SaveState_DownloadState();
+extern std::unique_ptr<SaveStateScreenshotData> SaveState_SaveScreenshot();
+extern bool SaveState_ZipToDisk(std::unique_ptr<ArchiveEntryList> srclist, std::unique_ptr<SaveStateScreenshotData> screenshot, const char* filename);
+extern bool SaveState_ReadScreenshot(const std::string& filename, u32* out_width, u32* out_height, std::vector<u32>* out_pixels);
+extern void SaveState_UnzipFromDisk(const std::string& filename);
 
 // --------------------------------------------------------------------------------------
 //  SaveStateBase class
@@ -55,7 +86,9 @@ public:
 	SaveStateBase( VmStateBuffer* memblock );
 	virtual ~SaveStateBase() { }
 
-	static wxString GetFilename( int slot );
+#ifndef PCSX2_CORE
+	static std::string GetSavestateFolder(int slot, bool isSavingOrLoading = false);
+#endif
 
 	// Gets the version of savestate that this object is acting on.
 	// The version refers to the low 16 bits only (high 16 bits classifies Pcsx2 build types)
@@ -64,12 +97,6 @@ public:
 		return (m_version & 0xffff);
 	}
 
-	// Loads or saves the entire emulation state.
-	// Note: The Cpu state must be reset, and plugins *open*, prior to Defrosting
-	// (loading) a state!
-	virtual SaveStateBase& FreezeAll();
-
-	virtual SaveStateBase& FreezeMainMemory();
 	virtual SaveStateBase& FreezeBios();
 	virtual SaveStateBase& FreezeInternals();
 
@@ -138,6 +165,7 @@ protected:
 	void mtvuFreeze();
 	void rcntFreeze();
 	void vuMicroFreeze();
+	void vuJITFreeze();
 	void vif0Freeze();
 	void vif1Freeze();
 	void sifFreeze();
@@ -157,7 +185,130 @@ protected:
 
 	void deci2Freeze();
 
+	// Save or load PCSX2's global frame counter (g_FrameCount) along with each savestate
+	//
+	// This is to prevent any inaccuracy issues caused by having a different
+	// internal emulation frame count than what it was at the beginning of the
+	// original recording
 	void InputRecordingFreeze();
+};
+
+// --------------------------------------------------------------------------------------
+//  ArchiveEntry
+// --------------------------------------------------------------------------------------
+class ArchiveEntry
+{
+protected:
+	std::string	m_filename;
+	uptr		m_dataidx;
+	size_t		m_datasize;
+
+public:
+	ArchiveEntry(std::string filename)
+		: m_filename(std::move(filename))
+	{
+		m_dataidx = 0;
+		m_datasize = 0;
+	}
+
+	virtual ~ArchiveEntry() = default;
+
+	ArchiveEntry& SetDataIndex(uptr idx)
+	{
+		m_dataidx = idx;
+		return *this;
+	}
+
+	ArchiveEntry& SetDataSize(size_t size)
+	{
+		m_datasize = size;
+		return *this;
+	}
+
+	const std::string& GetFilename() const
+	{
+		return m_filename;
+	}
+
+	uptr GetDataIndex() const
+	{
+		return m_dataidx;
+	}
+
+	uint GetDataSize() const
+	{
+		return m_datasize;
+	}
+};
+
+typedef SafeArray< u8 > ArchiveDataBuffer;
+
+// --------------------------------------------------------------------------------------
+//  ArchiveEntryList
+// --------------------------------------------------------------------------------------
+class ArchiveEntryList
+{
+	DeclareNoncopyableObject(ArchiveEntryList);
+
+protected:
+	std::vector<ArchiveEntry> m_list;
+	std::unique_ptr<ArchiveDataBuffer> m_data;
+
+public:
+	virtual ~ArchiveEntryList() = default;
+
+	ArchiveEntryList() {}
+
+	ArchiveEntryList(ArchiveDataBuffer* data)
+		: m_data(data)
+	{
+	}
+
+	ArchiveEntryList(ArchiveDataBuffer& data)
+		: m_data(&data)
+	{
+	}
+
+	const VmStateBuffer* GetBuffer() const
+	{
+		return m_data.get();
+	}
+
+	VmStateBuffer* GetBuffer()
+	{
+		return m_data.get();
+	}
+
+	u8* GetPtr(uint idx)
+	{
+		return &(*m_data)[idx];
+	}
+
+	const u8* GetPtr(uint idx) const
+	{
+		return &(*m_data)[idx];
+	}
+
+	ArchiveEntryList& Add(const ArchiveEntry& src)
+	{
+		m_list.push_back(src);
+		return *this;
+	}
+
+	size_t GetLength() const
+	{
+		return m_list.size();
+	}
+
+	ArchiveEntry& operator[](uint idx)
+	{
+		return m_list[idx];
+	}
+
+	const ArchiveEntry& operator[](uint idx) const
+	{
+		return m_list[idx];
+	}
 };
 
 // --------------------------------------------------------------------------------------
@@ -180,7 +331,6 @@ public:
 	void MakeRoomForData();
 
 	void FreezeMem( void* data, int size );
-	memSavingState& FreezeAll();
 
 	bool IsSaving() const { return true; }
 };
@@ -199,3 +349,15 @@ public:
 	bool IsFinished() const { return m_idx >= m_memory->GetSizeInBytes(); }
 };
 
+
+namespace Exception
+{
+	// Exception thrown when a corrupted or truncated savestate is encountered.
+	class SaveStateLoadError : public BadStream
+	{
+		DEFINE_STREAM_EXCEPTION(SaveStateLoadError, BadStream)
+
+		virtual std::string FormatDiagnosticMessage() const override;
+		virtual std::string FormatDisplayMessage() const override;
+	};
+}; // namespace Exception

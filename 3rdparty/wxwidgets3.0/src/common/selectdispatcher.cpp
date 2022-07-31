@@ -18,6 +18,10 @@
 // for compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #if wxUSE_SELECT_DISPATCHER
 
 #include "wx/private/selectdispatcher.h"
@@ -25,6 +29,8 @@
 
 #ifndef WX_PRECOMP
     #include "wx/hash.h"
+    #include "wx/log.h"
+    #include "wx/intl.h"
 #endif
 
 #include <errno.h>
@@ -81,12 +87,18 @@ bool wxSelectSets::HasFD(int fd) const
 
 bool wxSelectSets::SetFD(int fd, int flags)
 {
+    wxCHECK_MSG( fd >= 0, false, wxT("invalid descriptor") );
+
     for ( int n = 0; n < Max; n++ )
     {
         if ( flags & ms_flags[n] )
+        {
             wxFD_SET(fd, &m_fds[n]);
+        }
         else if ( wxFD_ISSET(fd,  (fd_set*) &m_fds[n]) )
+        {
             wxFD_CLR(fd, &m_fds[n]);
+        }
     }
 
     return true;
@@ -103,6 +115,8 @@ bool wxSelectSets::Handle(int fd, wxFDIOHandler& handler) const
     {
         if ( wxFD_ISSET(fd, (fd_set*) &m_fds[n]) )
         {
+            wxLogTrace(wxSelectDispatcher_Trace,
+                       wxT("Got %s event on fd %d"), ms_names[n], fd);
             (handler.*ms_handlers[n])();
             // callback can modify sets and destroy handler
             // this forces that one event can be processed at one time
@@ -128,7 +142,21 @@ bool wxSelectDispatcher::RegisterFD(int fd, wxFDIOHandler *handler, int flags)
     if ( fd > m_maxFD )
       m_maxFD = fd;
 
+    wxLogTrace(wxSelectDispatcher_Trace,
+                wxT("Registered fd %d: input:%d, output:%d, exceptional:%d"), fd, (flags & wxFDIO_INPUT) == wxFDIO_INPUT, (flags & wxFDIO_OUTPUT), (flags & wxFDIO_EXCEPTION) == wxFDIO_EXCEPTION);
     return true;
+}
+
+bool wxSelectDispatcher::ModifyFD(int fd, wxFDIOHandler *handler, int flags)
+{
+    if ( !wxMappedFDIODispatcher::ModifyFD(fd, handler, flags) )
+        return false;
+
+    wxASSERT_MSG( fd <= m_maxFD, wxT("logic error: registered fd > m_maxFD?") );
+
+    wxLogTrace(wxSelectDispatcher_Trace,
+                wxT("Modified fd %d: input:%d, output:%d, exceptional:%d"), fd, (flags & wxFDIO_INPUT) == wxFDIO_INPUT, (flags & wxFDIO_OUTPUT) == wxFDIO_OUTPUT, (flags & wxFDIO_EXCEPTION) == wxFDIO_EXCEPTION);
+    return m_sets.SetFD(fd, flags);
 }
 
 bool wxSelectDispatcher::UnregisterFD(int fd)
@@ -157,6 +185,8 @@ bool wxSelectDispatcher::UnregisterFD(int fd)
         }
     }
 
+    wxLogTrace(wxSelectDispatcher_Trace,
+                wxT("Removed fd %d, current max: %d"), fd, m_maxFD);
     return true;
 }
 
@@ -170,7 +200,10 @@ int wxSelectDispatcher::ProcessSets(const wxSelectSets& sets)
 
         wxFDIOHandler * const handler = FindHandler(fd);
         if ( !handler )
+        {
+            wxFAIL_MSG( wxT("NULL handler in wxSelectDispatcher?") );
             continue;
+        }
 
         if ( sets.Handle(fd, *handler) )
             numEvents++;
@@ -216,7 +249,8 @@ int wxSelectDispatcher::Dispatch(int timeout)
     switch ( DoSelect(sets, timeout) )
     {
         case -1:
-		break;
+            wxLogSysError(_("Failed to monitor I/O channels"));
+            return -1;
 
         case 0:
             // timeout expired without anything happening
@@ -225,8 +259,6 @@ int wxSelectDispatcher::Dispatch(int timeout)
         default:
             return ProcessSets(sets);
     }
-
-    return -1;
 }
 
 #endif // wxUSE_SELECT_DISPATCHER

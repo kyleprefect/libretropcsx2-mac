@@ -1,5 +1,5 @@
-/*  USBnull
- *  Copyright (C) 2002-2010  PCSX2 Dev Team
+/*  PCSX2 - PS2 Emulator for PCs
+ *  Copyright (C) 2002-2020  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -13,46 +13,50 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __USB_H__
-#define __USB_H__
+#pragma once
 
-#include <stdio.h>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <limits.h>
 
+#include "SaveState.h"
+
+struct WindowInfo;
+
+// ---------------------------------------------------------------------
 #define USBdefs
-#include "PS2Edefs.h"
-#include "PS2Eext.h"
 
-typedef void (*USBcallback)(int cycles);
-typedef int (*USBhandler)(void);
+extern u8* ram;
 
-extern USBcallback USBirq;
-
-extern s8 *usbregs, *ram;
-
-#define usbRs8(mem) usbregs[(mem)&0xffff]
-#define usbRs16(mem) (*(s16 *)&usbregs[(mem)&0xffff])
-#define usbRs32(mem) (*(s32 *)&usbregs[(mem)&0xffff])
-#define usbRu8(mem) (*(u8 *)&usbregs[(mem)&0xffff])
-#define usbRu16(mem) (*(u16 *)&usbregs[(mem)&0xffff])
-#define usbRu32(mem) (*(u32 *)&usbregs[(mem)&0xffff])
+// ---------------------------------------------------------------------
 
 void USBconfigure();
+
+void DestroyDevices();
+void CreateDevices();
+
 s32 USBinit();
+void USBasync(u32 cycles);
 void USBshutdown();
-s32 USBopen();
 void USBclose();
+s32 USBopen(const WindowInfo& wi);
+s32 USBfreeze(FreezeAction mode, freezeData* data);
+
 u8 USBread8(u32 addr);
 u16 USBread16(u32 addr);
 u32 USBread32(u32 addr);
 void USBwrite8(u32 addr, u8 value);
 void USBwrite16(u32 addr, u16 value);
 void USBwrite32(u32 addr, u32 value);
-void USBirqCallback(USBcallback callback);
-int _USBirqHandler(void);
-USBhandler USBirqHandler(void);
-void USBsetRAM(void *mem);
-void USBkeyEvent(keyEvent *ev);
-s32 USBfreeze(int mode, freezeData *data);
-void USBasync(u32 cycles);
 
+void USBsetRAM(void* mem);
+
+extern FILE* usbLog;
+s64 get_clock();
+
+/* usb-pad-raw.cpp */
+#if _WIN32
+#include "common/RedtapeWindows.h"
+extern HWND gsWnd;
 #endif

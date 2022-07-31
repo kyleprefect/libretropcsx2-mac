@@ -76,6 +76,25 @@
 #endif
 
 // Needed by window.cpp
+#if wxUSE_MOUSEWHEEL
+    #ifndef WM_MOUSEWHEEL
+        #define WM_MOUSEWHEEL           0x020A
+    #endif
+    #ifndef WM_MOUSEHWHEEL
+        #define WM_MOUSEHWHEEL          0x020E
+    #endif
+    #ifndef WHEEL_DELTA
+        #define WHEEL_DELTA             120
+    #endif
+    #ifndef SPI_GETWHEELSCROLLLINES
+        #define SPI_GETWHEELSCROLLLINES 104
+    #endif
+    #ifndef SPI_GETWHEELSCROLLCHARS
+        #define SPI_GETWHEELSCROLLCHARS 108
+    #endif
+#endif // wxUSE_MOUSEWHEEL
+
+// Needed by window.cpp
 #ifndef VK_OEM_1
     #define VK_OEM_1        0xBA
     #define VK_OEM_2        0xBF
@@ -243,7 +262,8 @@ typedef struct wxtagNMLVCUSTOMDRAW_ {
     #define LVS_EX_FULLROWSELECT 0x00000020
 #endif
 
-#if !defined(LVS_EX_LABELTIP)
+// LVS_EX_LABELTIP is not supported by Windows CE, don't define it there
+#if !defined(LVS_EX_LABELTIP) && !defined(__WXWINCE__)
     #define LVS_EX_LABELTIP 0x00004000
 #endif
 
@@ -310,6 +330,179 @@ typedef struct wxtagNMLVCUSTOMDRAW_ {
 #ifndef TVM_SETBKCOLOR
     #define TVM_SETBKCOLOR          (TV_FIRST + 29)
     #define TVM_SETTEXTCOLOR        (TV_FIRST + 30)
+#endif
+
+ /*
+  * The following are required for BC++ 5.5 (none at present.)
+  */
+
+ /*
+  * The following are specifically required for Digital Mars C++
+  */
+
+#ifdef __DMC__
+
+#ifndef VER_NT_WORKSTATION
+typedef struct _OSVERSIONINFOEX {
+    DWORD dwOSVersionInfoSize;
+    DWORD dwMajorVersion;
+    DWORD dwMinorVersion;
+    DWORD dwBuildNumber;
+    DWORD dwPlatformId;
+    TCHAR szCSDVersion[ 128 ];
+    WORD  wServicePackMajor;
+    WORD  wServicePackMinor;
+    WORD  wSuiteMask;
+    BYTE  wProductType;
+    BYTE  wReserved;
+} OSVERSIONINFOEX;
+#endif // !defined(VER_NT_WORKSTATION)
+
+#ifndef _TrackMouseEvent
+    #define _TrackMouseEvent TrackMouseEvent
+#endif
+
+#ifndef LVM_SETEXTENDEDLISTVIEWSTYLE
+    #define LVM_SETEXTENDEDLISTVIEWSTYLE (0x1000 + 54)
+#endif
+
+#ifndef LVM_GETSUBITEMRECT
+    #define LVM_GETSUBITEMRECT           (0x1000 + 56)
+#endif
+
+#ifndef LVCF_IMAGE
+    #define LVCF_IMAGE             0x0010
+#endif
+
+#ifndef Header_GetItemRect
+    #define Header_GetItemRect(w,i,r) \
+            (BOOL)SendMessage((w),HDM_GETITEMRECT,(WPARAM)(i),(LPARAM)(r))
+#endif
+
+#ifndef HDM_GETITEMRECT
+    #define HDM_GETITEMRECT (HDM_FIRST+7)
+#endif
+
+#ifndef ListView_GetHeader
+    #define ListView_GetHeader(w) (HWND)SendMessage((w),LVM_GETHEADER,0,0)
+#endif
+
+#ifndef ListView_GetSubItemRect
+    #define ListView_GetSubItemRect(w, i, s, c, p) (HWND)SendMessage(w,LVM_GETSUBITEMRECT,i, ((p) ? ((((LPRECT)(p))->top = s), (((LPRECT)(p))->left = c), (LPARAM)(p)) : (LPARAM)(LPRECT)NULL))
+#endif
+
+#ifndef LVM_GETHEADER
+    #define LVM_GETHEADER (LVM_FIRST+31)
+#endif
+
+#ifndef HDLAYOUT
+    #define HDLAYOUT HD_LAYOUT
+#endif
+
+#ifndef HDITEM
+    #define HDITEM HD_ITEM
+#endif
+
+#ifndef NMHEADER
+    #define NMHEADER HD_NOTIFY
+#endif
+
+#ifndef HDS_DRAGDROP
+    #define HDS_DRAGDROP 0x0040
+#endif
+#ifndef HDS_FULLDRAG
+    #define HDS_FULLDRAG 0x0080
+#endif
+
+
+#ifndef HDN_BEGINDRAG
+    #define HDN_BEGINDRAG (HDN_FIRST - 11)
+#endif
+
+#ifndef HDN_ENDDRAG
+    #define HDN_ENDDRAG (HDN_FIRST - 10)
+#endif
+
+#ifndef LVSICF_NOSCROLL
+    #define LVSICF_NOINVALIDATEALL  0x0001
+    #define LVSICF_NOSCROLL         0x0002
+#endif
+
+#ifndef CP_SYMBOL
+    #define CP_SYMBOL 42
+#endif
+
+// ----------------------------------------------------------------------------
+// wxDisplay
+// ----------------------------------------------------------------------------
+
+// The windows headers with Digital Mars lack some typedefs.
+// typedef them as my_XXX and then #define to rename to XXX in case
+// a newer version of Digital Mars fixes the headers
+// (or up to date PSDK is in use with older version)
+// also we use any required definition (MONITOR_DEFAULTTONULL) to recognize
+// whether whole missing block needs to be included
+
+#ifndef MONITOR_DEFAULTTONULL
+
+    #define HMONITOR_DECLARED
+    DECLARE_HANDLE(HMONITOR);
+    typedef BOOL(CALLBACK* my_MONITORENUMPROC)(HMONITOR,HDC,LPRECT,LPARAM);
+    #define MONITORENUMPROC my_MONITORENUMPROC
+    typedef struct my_tagMONITORINFO {
+        DWORD cbSize;
+        RECT rcMonitor;
+        RECT rcWork;
+        DWORD dwFlags;
+    } my_MONITORINFO,*my_LPMONITORINFO;
+    #define MONITORINFO my_MONITORINFO
+    #define LPMONITORINFO my_LPMONITORINFO
+
+    typedef struct my_MONITORINFOEX : public my_tagMONITORINFO
+    {
+        TCHAR       szDevice[CCHDEVICENAME];
+    } my_MONITORINFOEX, *my_LPMONITORINFOEX;
+    #define MONITORINFOEX my_MONITORINFOEX
+    #define LPMONITORINFOEX my_LPMONITORINFOEX
+
+    #ifndef MONITOR_DEFAULTTONULL
+        #define MONITOR_DEFAULTTONULL 0
+    #endif // MONITOR_DEFAULTTONULL
+
+    #ifndef MONITORINFOF_PRIMARY
+        #define MONITORINFOF_PRIMARY 1
+    #endif // MONITORINFOF_PRIMARY
+
+    #ifndef DDENUM_ATTACHEDSECONDARYDEVICES
+        #define DDENUM_ATTACHEDSECONDARYDEVICES 1
+    #endif
+
+#endif // MONITOR_DEFAULTTONULL
+
+// ----------------------------------------------------------------------------
+// Tree control
+// ----------------------------------------------------------------------------
+
+#ifndef TVIS_FOCUSED
+    #define TVIS_FOCUSED            0x0001
+#endif
+
+#ifndef TVS_CHECKBOXES
+    #define TVS_CHECKBOXES          0x0100
+#endif
+
+#ifndef TVITEM
+    #define TVITEM TV_ITEM
+#endif
+
+#endif
+    // DMC++
+
+ /*
+  * The following are specifically required for OpenWatcom C++ (none at present)
+  */
+
+#if defined(__WATCOMC__)
 #endif
 
  /*
@@ -466,6 +659,14 @@ typedef struct
 
 #ifndef MUI_LANGUAGE_NAME
 #define MUI_LANGUAGE_NAME 0x8
+#endif
+
+ /*
+  * In addition to the declarations for VC++, the following are required for WinCE
+  */
+
+#ifdef __WXWINCE__
+    #include "wx/msw/wince/missing.h"
 #endif
 
  /*

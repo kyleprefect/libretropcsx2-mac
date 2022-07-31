@@ -21,9 +21,10 @@
  */
 
 #include "PrecompiledHeader.h"
-
 #include "IsoFileFormats.h"
 #include "AsyncFileReader.h"
+#include "CDVD/CDVD.h"
+#include "common/Exceptions.h"
 
 #include <cstring>
 #include <array>
@@ -35,7 +36,7 @@ static int pmode, cdtype;
 static s32 layer1start = -1;
 static bool layer1searched = false;
 
-void CALLBACK ISOclose(void)
+void CALLBACK ISOclose()
 {
 	iso.Close();
 }
@@ -46,20 +47,17 @@ s32 CALLBACK ISOopen(const char* pTitle)
 
 	if ((pTitle == NULL) || (pTitle[0] == 0))
 	{
-		log_cb(RETRO_LOG_ERROR, "CDVDiso Error: No filename specified.\n");
+		Console.Error("CDVDiso Error: No filename specified.");
 		return -1;
 	}
 
-	// The current plugin API doesn't expect exceptions to propagate out of the API
-	// calls, so we need to catch them, log them, and return -1.
-
 	try
 	{
-		iso.Open(fromUTF8(pTitle));
+		iso.Open(pTitle);
 	}
 	catch (BaseException& ex)
 	{
-		log_cb(RETRO_LOG_ERROR, "%s\n", ex.FormatDiagnosticMessage());
+		Console.Error(ex.FormatDiagnosticMessage());
 		return -1;
 	}
 
@@ -117,7 +115,9 @@ s32 CALLBACK ISOgetTN(cdvdTN* Buffer)
 s32 CALLBACK ISOgetTD(u8 Track, cdvdTD* Buffer)
 {
 	if (Track == 0)
+	{
 		Buffer->lsn = iso.GetBlockCount();
+	}
 	else
 	{
 		Buffer->type = CDVD_MODE1_TRACK;
@@ -134,7 +134,7 @@ static bool testForPrimaryVolumeDescriptor(const std::array<u8, CD_FRAMESIZE_RAW
 	return std::equal(identifier.begin(), identifier.end(), buffer.begin() + iso.GetBlockOffset());
 }
 
-static void FindLayer1Start(void)
+static void FindLayer1Start()
 {
 	if (layer1searched)
 		return;
@@ -147,8 +147,7 @@ static void FindLayer1Start(void)
 	iso.ReadSync(buffer.data(), 16);
 	if (!testForPrimaryVolumeDescriptor(buffer))
 	{
-		log_cb(RETRO_LOG_ERROR,
-"isoFile: Invalid layer0 Primary Volume Descriptor\n");
+		Console.Error("isoFile: Invalid layer0 Primary Volume Descriptor");
 		return;
 	}
 
@@ -168,11 +167,11 @@ static void FindLayer1Start(void)
 
 		if (!testForPrimaryVolumeDescriptor(buffer))
 		{
-			log_cb(RETRO_LOG_ERROR, "isoFile: Invalid layer1 Primary Volume Descriptor\n");
+			Console.Error("isoFile: Invalid layer1 Primary Volume Descriptor");
 			return;
 		}
 		layer1start = blockresult;
-		log_cb(RETRO_LOG_INFO, "isoFile: second layer found at sector 0x%08x\n", layer1start);
+		Console.WriteLn(Color_Blue, "isoFile: second layer found at sector 0x%08x", layer1start);
 	}
 }
 
@@ -194,15 +193,17 @@ s32 CALLBACK ISOgetDualInfo(s32* dualType, u32* _layer1start)
 	return 0;
 }
 
-s32 CALLBACK ISOgetDiskType(void)
+s32 CALLBACK ISOgetDiskType()
 {
 	return cdtype;
 }
 
 s32 CALLBACK ISOgetTOC(void* toc)
 {
-	u8 type     = ISOgetDiskType();
+	u8 type = ISOgetDiskType();
 	u8* tocBuff = (u8*)toc;
+
+	//CDVD_LOG("CDVDgetTOC\n");
 
 	if (type == CDVD_TYPE_DVDV || type == CDVD_TYPE_PS2DVD)
 	{
@@ -329,6 +330,11 @@ s32 CALLBACK ISOreadSector(u8* tempbuffer, u32 lsn, int mode)
 
 	switch (mode)
 	{
+			//case CDVD_MODE_2352:
+			// Unreachable due to shortcut above.
+			//	pxAssume(false);
+			//	break;
+
 		case CDVD_MODE_2340:
 			pbuffer += 12;
 			psize = 2340;
@@ -342,8 +348,7 @@ s32 CALLBACK ISOreadSector(u8* tempbuffer, u32 lsn, int mode)
 			psize = 2048;
 			break;
 
-		default:
-			break;
+			jNO_DEFAULT
 	}
 
 	memcpy(tempbuffer, pbuffer, psize);
@@ -370,26 +375,32 @@ s32 CALLBACK ISOgetBuffer(u8* buffer)
 	return iso.FinishRead3(buffer, pmode);
 }
 
-s32 CALLBACK ISOgetTrayStatus(void)
+//u8* CALLBACK ISOgetBuffer()
+//{
+//	iso.FinishRead();
+//	return pbuffer;
+//}
+
+s32 CALLBACK ISOgetTrayStatus()
 {
 	return CDVD_TRAY_CLOSE;
 }
 
-s32 CALLBACK ISOctrlTrayOpen(void)
+s32 CALLBACK ISOctrlTrayOpen()
 {
 	return 0;
 }
-s32 CALLBACK ISOctrlTrayClose(void)
-{
-	return 0;
-}
-
-s32 CALLBACK ISOdummyS32(void)
+s32 CALLBACK ISOctrlTrayClose()
 {
 	return 0;
 }
 
-void CALLBACK ISOnewDiskCB(void (* /* callback */)())
+s32 CALLBACK ISOdummyS32()
+{
+	return 0;
+}
+
+void CALLBACK ISOnewDiskCB(void (*/* callback */)())
 {
 }
 

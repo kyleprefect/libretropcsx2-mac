@@ -25,10 +25,13 @@ namespace R5900 {
 namespace Dynarec {
 namespace OpcodeImpl {
 
-	void recJ(void);
-	void recJAL(void);
-	void recJR(void);
-	void recJALR(void);
-} } }
+	void recJ();
+	void recJAL();
+	void recJR();
+	void recJALR();
+
+} // namespace OpcodeImpl
+} // namespace Dynarec
+} // namespace R5900
 
 #endif

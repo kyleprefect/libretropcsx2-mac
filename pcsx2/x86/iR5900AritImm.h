@@ -24,16 +24,19 @@ namespace R5900 {
 namespace Dynarec {
 namespace OpcodeImpl {
 
-	void recADDI(void);
-	void recADDIU(void);
-	void recDADDI(void);
-	void recDADDIU(void);
-	void recANDI(void);
-	void recORI(void);
-	void recXORI(void);
+	void recADDI();
+	void recADDIU();
+	void recDADDI();
+	void recDADDIU();
+	void recANDI();
+	void recORI();
+	void recXORI();
 
-	void recSLTI(void);
-	void recSLTIU(void);
-} } }
+	void recSLTI();
+	void recSLTIU();
+
+} // namespace OpcodeImpl
+} // namespace Dynarec
+} // namespace R5900
 
 #endif

@@ -19,8 +19,8 @@
 #include "DebugInterface.h"
 #include "SymbolMap.h"
 #include "DebugInterface.h"
-#include "../R5900.h"
-#include "../R5900OpcodeTables.h"
+#include "R5900.h"
+#include "R5900OpcodeTables.h"
 
 static std::vector<MIPSAnalyst::AnalyzedFunction> functions;
 
@@ -39,17 +39,33 @@ static std::vector<MIPSAnalyst::AnalyzedFunction> functions;
 
 namespace MIPSAnalyst
 {
-	static u32 GetJumpTarget(u32 addr)
+	u32 GetJumpTarget(u32 addr)
 	{
 		u32 op = r5900Debug.read32(addr);
 		const R5900::OPCODE& opcode = R5900::GetInstruction(op);
 
 		if ((opcode.flags & IS_BRANCH) && (opcode.flags & BRANCHTYPE_MASK) == BRANCHTYPE_JUMP)
-			return (addr & 0xF0000000) | ((op&0x03FFFFFF) << 2);
-		return INVALIDTARGET;
+		{
+			u32 target = (addr & 0xF0000000) | ((op&0x03FFFFFF) << 2);
+			return target;
+		}
+		else
+			return INVALIDTARGET;
 	}
 
-	static u32 GetBranchTargetNoRA(u32 addr)
+	u32 GetBranchTarget(u32 addr)
+	{
+		u32 op = r5900Debug.read32(addr);
+		const R5900::OPCODE& opcode = R5900::GetInstruction(op);
+		
+		int branchType = (opcode.flags & BRANCHTYPE_MASK);
+		if ((opcode.flags & IS_BRANCH) && (branchType == BRANCHTYPE_BRANCH || branchType == BRANCHTYPE_BC1))
+			return addr + 4 + ((signed short)(op&0xFFFF)<<2);
+		else
+			return INVALIDTARGET;
+	}
+	
+	u32 GetBranchTargetNoRA(u32 addr)
 	{
 		u32 op = r5900Debug.read32(addr);
 		const R5900::OPCODE& opcode = R5900::GetInstruction(op);
@@ -59,11 +75,14 @@ namespace MIPSAnalyst
 		{
 			if (!(opcode.flags & IS_LINKED))
 				return addr + 4 + ((signed short)(op&0xFFFF)<<2);
+			else
+				return INVALIDTARGET;
 		}
-		return INVALIDTARGET;
+		else
+			return INVALIDTARGET;
 	}
 
-	static u32 GetSureBranchTarget(u32 addr)
+	u32 GetSureBranchTarget(u32 addr)
 	{
 		u32 op = r5900Debug.read32(addr);
 		const R5900::OPCODE& opcode = R5900::GetInstruction(op);
@@ -104,8 +123,11 @@ namespace MIPSAnalyst
 				return addr + 4 + ((signed short)(op&0xFFFF)<<2);
 			else if (sure && !takeBranch)
 				return addr + 8;
+			else
+				return INVALIDTARGET;
 		}
-		return INVALIDTARGET;
+		else
+			return INVALIDTARGET;
 	}
 
 	static const char *DefaultFunctionName(char buffer[256], u32 startAddr) {
@@ -119,8 +141,9 @@ namespace MIPSAnalyst
 		// Maybe a bit high... just to make sure we don't get confused by recursive tail recursion.
 		static const u32 MAX_FUNC_SIZE = 0x20000;
 
-		if (fromAddr > knownEnd + MAX_FUNC_SIZE)
+		if (fromAddr > knownEnd + MAX_FUNC_SIZE) {
 			return INVALIDTARGET;
+		}
 
 		// Code might jump halfway up to before fromAddr, but after knownEnd.
 		// In that area, there could be another jump up to the valid range.
@@ -149,8 +172,9 @@ namespace MIPSAnalyst
 					closestJumpbackTarget = target;
 				}
 			}
-			if (aheadOp == MIPS_MAKE_JR_RA())
+			if (aheadOp == MIPS_MAKE_JR_RA()) {
 				break;
+			}
 		}
 
 		if (closestJumpbackAddr != INVALIDTARGET && furthestJumpbackAddr == INVALIDTARGET) {
@@ -172,12 +196,13 @@ namespace MIPSAnalyst
 		return furthestJumpbackAddr;
 	}
 
-	void ScanForFunctions(u32 startAddr, u32 endAddr, bool insertSymbols) {
+	void ScanForFunctions(SymbolMap& map, u32 startAddr, u32 endAddr, bool insertSymbols) {
 		AnalyzedFunction currentFunction = {startAddr};
 
 		u32 furthestBranch = 0;
 		bool looking = false;
 		bool end = false;
+		bool isStraightLeaf = true;
 
 		functions.clear();
 
@@ -185,7 +210,7 @@ namespace MIPSAnalyst
 		for (addr = startAddr; addr <= endAddr; addr += 4) {
 			// Use pre-existing symbol map info if available. May be more reliable.
 			SymbolInfo syminfo;
-			if (symbolMap.GetSymbolInfo(&syminfo, addr, ST_FUNCTION)) {
+			if (map.GetSymbolInfo(&syminfo, addr, ST_FUNCTION)) {
 				addr = syminfo.address + syminfo.size - 4;
 
 				// We still need to insert the func for hashing purposes.
@@ -203,6 +228,7 @@ namespace MIPSAnalyst
 
 			u32 target = GetBranchTargetNoRA(addr);
 			if (target != INVALIDTARGET) {
+				isStraightLeaf = false;
 				if (target > furthestBranch) {
 					furthestBranch = target;
 				}
@@ -272,11 +298,13 @@ namespace MIPSAnalyst
 					addr += 4;
 
 				currentFunction.end = addr + 4;
+				currentFunction.isStraightLeaf = isStraightLeaf;
 				functions.push_back(currentFunction);
 				furthestBranch = 0;
 				addr += 4;
 				looking = false;
 				end = false;
+				isStraightLeaf = true;
 
 				currentFunction.start = addr+4;
 			}
@@ -289,8 +317,188 @@ namespace MIPSAnalyst
 			iter->size = iter->end - iter->start + 4;
 			if (insertSymbols) {
 				char temp[256];
-				symbolMap.AddFunction(DefaultFunctionName(temp, iter->start), iter->start, iter->end - iter->start + 4);
+				map.AddFunction(DefaultFunctionName(temp, iter->start), iter->start, iter->end - iter->start + 4);
 			}
 		}
+	}
+
+	MipsOpcodeInfo GetOpcodeInfo(DebugInterface* cpu, u32 address) {
+		MipsOpcodeInfo info;
+		memset(&info, 0, sizeof(info));
+
+		if (!cpu->isValidAddress(address))
+			return info;
+
+		info.cpu = cpu;
+		info.opcodeAddress = address;
+		info.encodedOpcode = cpu->read32(address);
+		u32 op = info.encodedOpcode;
+		const R5900::OPCODE& opcode = R5900::GetInstruction(op);
+
+		// extract all the branch related information
+		info.isBranch = (opcode.flags & IS_BRANCH) != 0;
+		if (info.isBranch)
+		{
+			info.isLinkedBranch = (opcode.flags & IS_LINKED) != 0;
+			info.isLikelyBranch = (opcode.flags & IS_LIKELY) != 0;
+
+			u64 rs,rt;
+			u32 value;
+			switch (opcode.flags & BRANCHTYPE_MASK)
+			{
+			case BRANCHTYPE_JUMP:
+				info.isConditional = false;
+				info.branchTarget =  (info.opcodeAddress & 0xF0000000) | ((op&0x03FFFFFF) << 2);
+				break;
+			case BRANCHTYPE_BRANCH:
+				info.isConditional = true;
+				info.branchTarget = info.opcodeAddress + 4 + ((s16)(op&0xFFFF)<<2);
+			
+				rs = info.cpu->getRegister(0,MIPS_GET_RS(op))._u64[0];
+				rt = info.cpu->getRegister(0,MIPS_GET_RT(op))._u64[0];
+				switch (opcode.flags & CONDTYPE_MASK)
+				{
+				case CONDTYPE_EQ:
+					info.conditionMet = (rt == rs);
+					if (MIPS_GET_RT(op) == MIPS_GET_RS(op))	// always true
+						info.isConditional = false;
+					break;
+				case CONDTYPE_NE:
+					info.conditionMet = (rt != rs);
+					if (MIPS_GET_RT(op) == MIPS_GET_RS(op))	// always false
+						info.isConditional = false;
+					break;
+				case CONDTYPE_LEZ:
+					info.conditionMet = (((s64)rs) <= 0);
+					break;
+				case CONDTYPE_GTZ:
+					info.conditionMet = (((s64)rs) > 0);
+					break;
+				case CONDTYPE_LTZ:
+					info.conditionMet = (((s64)rs) < 0);
+					break;
+				case CONDTYPE_GEZ:
+					info.conditionMet = (((s64)rs) >= 0);
+					break;
+				}
+				
+				break;
+			case BRANCHTYPE_REGISTER:
+				info.isConditional = false;
+				info.isBranchToRegister = true;
+				info.branchRegisterNum = (int)MIPS_GET_RS(op);
+				info.branchTarget = info.cpu->getRegister(0,info.branchRegisterNum)._u32[0];
+				break;
+			case BRANCHTYPE_SYSCALL:
+				info.isConditional = false;
+				info.isSyscall = true;
+				info.branchTarget = 0x80000000+0x180;
+				break;
+			case BRANCHTYPE_ERET:
+				info.isConditional = false;
+				// probably shouldn't be hard coded like this...
+				if (cpuRegs.CP0.n.Status.b.ERL)
+				{
+					info.branchTarget = cpuRegs.CP0.n.ErrorEPC;
+				} else {
+					info.branchTarget = cpuRegs.CP0.n.EPC;
+				}
+				break;
+			case BRANCHTYPE_BC1:
+				info.isConditional = true;
+				value = info.cpu->getRegister(EECAT_FCR,31)._u32[0] & 0x00800000;
+				info.branchTarget = info.opcodeAddress + 4 + ((s16)(op&0xFFFF)<<2);
+
+				switch (opcode.flags & CONDTYPE_MASK)
+				{
+				case CONDTYPE_EQ:
+					info.conditionMet = value == 0;
+					break;
+				case CONDTYPE_NE:
+					info.conditionMet = value != 0;
+					break;
+				}
+				break;
+			}
+		}
+
+		// extract the accessed memory address
+		info.isDataAccess = (opcode.flags & IS_MEMORY) != 0;
+		if (info.isDataAccess)
+		{
+			if (opcode.flags & IS_LEFT)
+				info.lrType = LOADSTORE_LEFT;
+			else if (opcode.flags & IS_RIGHT)
+				info.lrType = LOADSTORE_RIGHT;
+			
+			u32 rs = info.cpu->getRegister(0, (int)MIPS_GET_RS(op));
+			s16 imm16 = op & 0xFFFF;
+			info.dataAddress = rs + imm16;
+
+			switch (opcode.flags & MEMTYPE_MASK)
+			{
+			case MEMTYPE_BYTE:
+				info.dataSize = 1;
+				break;
+			case MEMTYPE_HALF:
+				info.dataSize = 2;
+				break;
+			case MEMTYPE_WORD:
+				info.dataSize = 4;
+				if (info.lrType == LOADSTORE_LEFT)
+					info.dataAddress -= 3;
+				break;
+			case MEMTYPE_DWORD:
+				info.dataSize = 8;
+				if (info.lrType == LOADSTORE_LEFT)
+					info.dataAddress -= 7;
+				break;
+			case MEMTYPE_QWORD:
+				info.dataSize = 16;
+				break;
+			}
+			
+			info.hasRelevantAddress = true;
+			info.releventAddress = info.dataAddress;
+		}
+
+		// gather relevant address for alu operations
+		if (opcode.flags & IS_ALU)
+		{
+			u64 rs,rt;
+			rs = info.cpu->getRegister(0,MIPS_GET_RS(op))._u64[0];
+			rt = info.cpu->getRegister(0,MIPS_GET_RT(op))._u64[0];
+
+			switch (opcode.flags & ALUTYPE_MASK)
+			{
+			case ALUTYPE_ADDI:
+				info.hasRelevantAddress = true;
+				info.releventAddress = rs+((s16)(op & 0xFFFF));
+				break;
+			case ALUTYPE_ADD:
+				info.hasRelevantAddress = true;
+				info.releventAddress = rs+rt;
+				break;
+			case ALUTYPE_SUB:
+				info.hasRelevantAddress = true;
+				info.releventAddress = rs-rt;
+				break;
+			case ALUTYPE_CONDMOVE:
+				info.isConditional = true;
+
+				switch (opcode.flags & CONDTYPE_MASK)
+				{
+				case CONDTYPE_EQ:
+					info.conditionMet = (rt == 0);
+					break;
+				case CONDTYPE_NE:
+					info.conditionMet = (rt != 0);
+					break;
+				}
+				break;
+			}
+		}
+
+		return info;
 	}
 }

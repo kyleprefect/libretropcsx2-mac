@@ -161,7 +161,8 @@ struct decoder_t {
 	template< typename T >
 	void SetOutputTo( T& obj )
 	{
-		uint mb_offset  = ((uptr)&obj - (uptr)&mb8);
+		uint mb_offset = ((uptr)&obj - (uptr)&mb8);
+		pxAssume( (mb_offset & 15) == 0 );
 		ipu0_idx	= mb_offset / 16;
 		ipu0_data	= sizeof(obj)/16;
 	}
@@ -173,7 +174,7 @@ struct decoder_t {
 	
 	void AdvanceIpuDataBy(uint amt)
 	{
-		pxAssertMsg(ipu0_data>=amt);
+		pxAssertMsg(ipu0_data>=amt, "IPU FIFO Overflow on advance!" );
 		ipu0_idx  += amt;
 		ipu0_data -= amt;
 	}
@@ -214,12 +215,18 @@ extern int slice (u8 * buffer);
 #define BigEndian(in) __builtin_bswap32(in) // or we could use the asm function bswap...
 #endif
 
-extern __aligned16 const mpeg2_scan_pack mpeg2_scan;
+#ifdef _MSC_VER
+#define BigEndian64(in) _byteswap_uint64(in)
+#else
+#define BigEndian64(in) __builtin_bswap64(in) // or we could use the asm function bswap...
+#endif
+
+alignas(16) extern const mpeg2_scan_pack mpeg2_scan;
 extern const int non_linear_quantizer_scale[];
 
 // The IPU can only do one task at once and never uses other buffers so all mpeg state variables
 // are made available to mpeg/vlc modules as globals here:
 
-extern __aligned16 tIPU_BP g_BP;
-extern __aligned16 decoder_t decoder;
+alignas(16) extern tIPU_BP g_BP;
+alignas(16) extern decoder_t decoder;
 

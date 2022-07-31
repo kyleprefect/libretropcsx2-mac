@@ -44,9 +44,27 @@ union tBITBLTBUF {
 	};
 };
 
-union tTRXREG {
+union tTRXPOS {
 	u64 _u64;
 	struct {
+		u32 SSAX : 11;
+		u32 _PAD1 : 5;
+		u32 SSAY : 11;
+		u32 _PAD2 : 5;
+		u32 DSAX : 11;
+		u32 _PAD3 : 5;
+		u32 DSAY : 11;
+		u32 DIRY : 1;
+		u32 DIRX : 1;
+		u32 _PAD4 : 3;
+	};
+};
+
+union tTRXREG
+{
+	u64 _u64;
+	struct
+	{
 		u32 RRW : 12;
 		u32 _pad12 : 20;
 		u32 RRH : 12;
@@ -61,8 +79,8 @@ struct tVIF_CTRL {
 
 // NOTE, if debugging vif stalls, use sega classics, spyro, gt4, and taito
 struct vifStruct {
-	__aligned16 u128 MaskRow;
-	__aligned16 u128 MaskCol;
+	alignas(16) u128 MaskRow;
+	alignas(16) u128 MaskCol;
 
 	struct { // These must be together for MTVU
 		vifCode tag;
@@ -83,8 +101,17 @@ struct vifStruct {
 	int unpackcalls;
 	// GS registers used for calculating the size of the last local->host transfer initiated on the GS
 	// Transfer size calculation should be restricted to GS emulation in the future
-	tBITBLTBUF BITBLTBUF;
-	tTRXREG    TRXREG;
+	union
+	{
+		struct
+		{
+			tBITBLTBUF BITBLTBUF;
+			tTRXPOS    TRXPOS;
+			tTRXREG    TRXREG;
+		};
+		u64 transfer_registers[3];
+	};
+
 	u32        GSLastDownloadSize;
 
 	tVIF_CTRL  irqoffset; // 32bit offset where next vif code is
@@ -95,14 +122,12 @@ struct vifStruct {
 	bool queued_program;
 	u32 queued_pc;
 	bool queued_gif_wait;
-	
 };
 
-extern __aligned16 vifStruct  vif0, vif1;
+alignas(16) extern vifStruct  vif0, vif1;
 
 _vifT extern u32 vifRead32(u32 mem);
 _vifT extern bool vifWrite32(u32 mem, u32 value);
-void ExecuteVU(int idx);
 extern void vif0Interrupt();
 extern void vif0VUFinish();
 extern void vif0Reset();
@@ -111,10 +136,10 @@ extern void vif1Interrupt();
 extern void vif1VUFinish();
 extern void vif1Reset();
 
-typedef int __fastcall FnType_VifCmdHandler(int pass, const u32 *data);
+typedef int FnType_VifCmdHandler(int pass, const u32 *data);
 typedef FnType_VifCmdHandler* Fnptr_VifCmdHandler;
 
-extern const __aligned16 Fnptr_VifCmdHandler vifCmdHandler[2][128];
+alignas(16) extern const Fnptr_VifCmdHandler vifCmdHandler[2][128];
 
 __fi static int _limit(int a, int max)
 {

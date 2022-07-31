@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "common/Exceptions.h"
+
 class BaseR5900Exception;
 
 // --------------------------------------------------------------------------------------
@@ -231,13 +233,13 @@ struct tlbs
 
 #define _PC_       cpuRegs.pc       // The next PC to be executed - only used in this header and R3000A.h
 
-#define _Funct_			((cpuRegs.code      ) & 0x3F)  // The funct part of the instruction register
-#define _Rd_			((cpuRegs.code >> 11) & 0x1F)  // The rd part of the instruction register
-#define _Rt_			((cpuRegs.code >> 16) & 0x1F)  // The rt part of the instruction register
-#define _Rs_			((cpuRegs.code >> 21) & 0x1F)  // The rs part of the instruction register
-#define _Sa_			((cpuRegs.code >>  6) & 0x1F)  // The sa part of the instruction register
-#define _Im_			((u16)cpuRegs.code) // The immediate part of the instruction register
-#define _InstrucTarget_ (cpuRegs.code & 0x03ffffff)    // The target part of the instruction register
+#define _Funct_          ((cpuRegs.code      ) & 0x3F)  // The funct part of the instruction register
+#define _Rd_             ((cpuRegs.code >> 11) & 0x1F)  // The rd part of the instruction register
+#define _Rt_             ((cpuRegs.code >> 16) & 0x1F)  // The rt part of the instruction register
+#define _Rs_             ((cpuRegs.code >> 21) & 0x1F)  // The rs part of the instruction register
+#define _Sa_             ((cpuRegs.code >>  6) & 0x1F)  // The sa part of the instruction register
+#define _Im_             ((u16)cpuRegs.code) // The immediate part of the instruction register
+#define _InstrucTarget_  (cpuRegs.code & 0x03ffffff)    // The target part of the instruction register
 
 #define _Imm_	((s16)cpuRegs.code) // sign-extended immediate
 #define _ImmU_	(cpuRegs.code&0xffff) // zero-extended immediate
@@ -253,9 +255,9 @@ struct tlbs
 
 #endif
 
-extern __aligned16 cpuRegisters cpuRegs;
-extern __aligned16 fpuRegisters fpuRegs;
-extern __aligned16 tlbs tlb[48];
+alignas(16) extern cpuRegisters cpuRegs;
+alignas(16) extern fpuRegisters fpuRegs;
+alignas(16) extern tlbs tlb[48];
 
 extern u32 g_nextEventCycle;
 extern bool eeEventTestIsActive;
@@ -266,7 +268,7 @@ void intSetBranch();
 
 // This is a special form of the interpreter's doBranch that is run from various
 // parts of the Recs (namely COP0's branch codes and stuff).
-void __fastcall intDoBranch(u32 target);
+void intDoBranch(u32 target);
 
 // modules loaded at hardcoded addresses by the kernel
 const u32 EEKERNEL_START	= 0;
@@ -275,9 +277,9 @@ const u32 EELOAD_START		= 0x82000;
 const u32 EELOAD_SIZE		= 0x20000; // overestimate for searching
 extern u32 g_eeloadMain, g_eeloadExec;
 
-extern void __fastcall eeGameStarting();
-extern void __fastcall eeloadHook();
-extern void __fastcall eeloadHook2();
+extern void eeGameStarting();
+extern void eeloadHook();
+extern void eeloadHook2();
 
 // --------------------------------------------------------------------------------------
 //  R5900cpu
@@ -347,22 +349,10 @@ struct R5900cpu
 	//
 	void (*Execute)();
 
-	// Checks for execution suspension or cancellation.  In pthreads terms this provides
-	// a "cancellation point."  Execution state checks are typically performed at Vsyncs
-	// by the generic VM event handlers in R5900.cpp/Counters.cpp (applies to both recs
-	// and ints).
-	//
-	// Implementation note: Because of the nuances of recompiled code execution, setjmp
-	// may be used in place of thread cancellation or C++ exceptions (non-SEH exceptions
-	// cannot unwind through the recompiled code stackframes, thus longjmp must be used).
-	//
-	// Thread Affinity:
-	//   Must be called on the same thread as Execute.
-	//
-	// Exception Throws:
-	//   May throw Execution/Pthreads cancellations if the compiler supports SEH.
-	//
-	void (*CheckExecutionState)();
+	// Immediately exits execution of recompiled code if we are in a state to do so, or
+	// queues an exit as soon as it is safe. Safe in this case refers to whether we are
+	// currently executing events or not.
+	void (*ExitExecution)();
 
 	// Safely throws host exceptions from executing code (either recompiled or interpreted).
 	// If this function is called outside the context of the CPU's code execution, then the
@@ -423,21 +413,22 @@ enum EE_EventType
 	
 	DMAC_GIF_UNIT,
 	VIF_VU0_FINISH,
-	VIF_VU1_FINISH
+	VIF_VU1_FINISH,
+	IPU_PROCESS
 };
 
 extern void CPU_INT( EE_EventType n, s32 ecycle );
 extern uint intcInterrupt();
 extern uint dmacInterrupt();
 
-
 extern void cpuReset();		// can throw Exception::FileNotFound.
 extern void cpuException(u32 code, u32 bd);
 extern void cpuTlbMissR(u32 addr, u32 bd);
 extern void cpuTlbMissW(u32 addr, u32 bd);
+extern void cpuTestHwInts();
 extern void cpuClearInt(uint n);
-extern void __fastcall GoemonPreloadTlb();
-extern void __fastcall GoemonUnloadTlb(u32 key);
+extern void GoemonPreloadTlb();
+extern void GoemonUnloadTlb(u32 key);
 
 extern void cpuSetNextEvent( u32 startCycle, s32 delta );
 extern void cpuSetNextEventDelta( s32 delta );
@@ -449,6 +440,10 @@ extern void _cpuEventTest_Shared();		// for internal use by the Dynarecs and Int
 extern void cpuTestINTCInts();
 extern void cpuTestDMACInts();
 extern void cpuTestTIMRInts();
+
+// breakpoint code shared between interpreter and recompiler
+int isMemcheckNeeded(u32 pc);
+int isBreakpointNeeded(u32 addr);
 
 ////////////////////////////////////////////////////////////////////
 // Exception Codes

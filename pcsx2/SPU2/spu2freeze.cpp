@@ -21,9 +21,15 @@ namespace SPU2Savestate
 {
 	// Arbitrary ID to identify SPU2 saves.
 	static const u32 SAVE_ID = 0x1227521;
+
 	// versioning for saves.
 	// Increment this when changes to the savestate system are made.
 	static const u32 SAVE_VERSION = 0x000e;
+
+	static void wipe_the_cache()
+	{
+		memset(pcm_cache_data, 0, pcm_BlockCount * sizeof(PcmCacheEntry));
+	}
 } // namespace SPU2Savestate
 
 struct SPU2Savestate::DataBlock
@@ -35,19 +41,19 @@ struct SPU2Savestate::DataBlock
 	u32 version; // SPU2 version identifier
 	V_Core Cores[2];
 	V_SPDIF Spdif;
-	s16 OutPos;
-	s16 InputPos;
+	u16 OutPos;
+	u16 InputPos;
 	u32 Cycles;
 	u32 lClocks;
 	int PlayMode;
 };
 
-s32 __fastcall SPU2Savestate::FreezeIt(DataBlock& spud)
+s32 SPU2Savestate::FreezeIt(DataBlock& spud)
 {
 	spud.spu2id = SAVE_ID;
 	spud.version = SAVE_VERSION;
 
-	pxAssertMsg(spu2regs && _spu2mem);
+	pxAssertMsg(spu2regs && _spu2mem, "Looks like PCSX2 is trying to savestate while components are shut down.  That's a no-no! It shouldn't crash, but the savestate will probably be corrupted.");
 
 	if (spu2regs != nullptr)
 		memcpy(spud.unkregs, spu2regs, sizeof(spud.unkregs));
@@ -71,10 +77,20 @@ s32 __fastcall SPU2Savestate::FreezeIt(DataBlock& spud)
 	return 0;
 }
 
-s32 __fastcall SPU2Savestate::ThawIt(DataBlock& spud)
+s32 SPU2Savestate::ThawIt(DataBlock& spud)
 {
 	if (spud.spu2id != SAVE_ID || spud.version < SAVE_VERSION)
 	{
+		fprintf(stderr, "\n*** SPU2 Warning:\n");
+		if (spud.spu2id == SAVE_ID)
+			fprintf(stderr, "\tSavestate version is from an older version of PCSX2.\n");
+		else
+			fprintf(stderr, "\tThe savestate you are trying to load is incorrect or corrupted.\n");
+
+		fprintf(stderr,
+				"\tAudio may not recover correctly.  Save your game to memorycard, reset,\n\n"
+				"\tand then continue from there.\n\n");
+
 		// Do *not* reset the cores.
 		// We'll need some "hints" as to how the cores should be initialized, and the
 		// only way to get that is to use the game's existing core settings and hope
@@ -82,11 +98,13 @@ s32 __fastcall SPU2Savestate::ThawIt(DataBlock& spud)
 
 		// adpcm cache : Clear all the cache flags and buffers.
 
-		memset(pcm_cache_data, 0, pcm_BlockCount * sizeof(PcmCacheEntry));
+		wipe_the_cache();
 	}
 	else
 	{
-		pxAssertMsg(spu2regs && _spu2mem);
+		SndBuffer::ClearContents();
+
+		pxAssertMsg(spu2regs && _spu2mem, "Looks like PCSX2 is trying to loadstate while components are shut down.  That's a no-no!  It shouldn't crash, but the savestate will probably be corrupted.");
 
 		// base stuff
 		if (spu2regs)
@@ -103,7 +121,7 @@ s32 __fastcall SPU2Savestate::ThawIt(DataBlock& spud)
 		lClocks = spud.lClocks;
 		PlayMode = spud.PlayMode;
 
-		memset(pcm_cache_data, 0, pcm_BlockCount * sizeof(PcmCacheEntry));
+		wipe_the_cache();
 
 		// Go through the V_Voice structs and recalculate SBuffer pointer from
 		// the NextA setting.
@@ -127,7 +145,7 @@ s32 __fastcall SPU2Savestate::ThawIt(DataBlock& spud)
 	return 0;
 }
 
-s32 __fastcall SPU2Savestate::SizeIt()
+s32 SPU2Savestate::SizeIt()
 {
 	return sizeof(DataBlock);
 }

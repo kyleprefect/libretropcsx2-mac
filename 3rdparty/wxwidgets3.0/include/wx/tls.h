@@ -56,6 +56,8 @@
 
     #if defined(__WINDOWS__)
         #include "wx/msw/tls.h"
+    #elif defined(__OS2__)
+        #include "wx/os2/tls.h"
     #elif defined(__UNIX__)
         #include "wx/unix/tls.h"
     #else

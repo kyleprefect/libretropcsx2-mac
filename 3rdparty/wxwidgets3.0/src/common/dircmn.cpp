@@ -19,8 +19,14 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #ifndef WX_PRECOMP
     #include "wx/string.h"
+    #include "wx/log.h"
+    #include "wx/intl.h"
     #include "wx/filefn.h"
     #include "wx/arrstr.h"
 #endif //WX_PRECOMP
@@ -41,6 +47,29 @@ wxDirTraverser::OnOpenError(const wxString& WXUNUSED(dirname))
 {
     return wxDIR_IGNORE;
 }
+
+// ----------------------------------------------------------------------------
+// wxDir::HasFiles() and HasSubDirs()
+// ----------------------------------------------------------------------------
+
+// dumb generic implementation
+
+bool wxDir::HasFiles(const wxString& spec) const
+{
+    wxString s;
+    return GetFirst(&s, spec, wxDIR_FILES | wxDIR_HIDDEN);
+}
+
+// we have a (much) faster version for Unix
+#if (defined(__CYGWIN__) && defined(__WINDOWS__)) || !defined(__UNIX_LIKE__) || defined(__EMX__) || defined(__WINE__)
+
+bool wxDir::HasSubDirs(const wxString& spec) const
+{
+    wxString s;
+    return GetFirst(&s, spec, wxDIR_DIRS | wxDIR_HIDDEN);
+}
+
+#endif // !Unix
 
 // ----------------------------------------------------------------------------
 // wxDir::GetNameWithSep()
@@ -72,6 +101,9 @@ size_t wxDir::Traverse(wxDirTraverser& sink,
                        const wxString& filespec,
                        int flags) const
 {
+    wxCHECK_MSG( IsOpened(), (size_t)-1,
+                 wxT("dir must be opened before traversing it") );
+
     // the total number of files found
     size_t nFiles = 0;
 
@@ -93,6 +125,7 @@ size_t wxDir::Traverse(wxDirTraverser& sink,
             switch ( sink.OnDir(fulldirname) )
             {
                 default:
+                    wxFAIL_MSG(wxT("unexpected OnDir() return value") );
                     // fall through
 
                 case wxDIR_STOP:
@@ -111,6 +144,7 @@ size_t wxDir::Traverse(wxDirTraverser& sink,
                         bool ok;
                         do
                         {
+                            wxLogNull noLog;
                             ok = subdir.Open(fulldirname);
                             if ( !ok )
                             {
@@ -119,6 +153,7 @@ size_t wxDir::Traverse(wxDirTraverser& sink,
                                 switch ( sink.OnOpenError(fulldirname) )
                                 {
                                     default:
+                                        wxFAIL_MSG(wxT("unexpected OnOpenError() return value") );
                                         // fall through
 
                                     case wxDIR_STOP:
@@ -166,6 +201,9 @@ size_t wxDir::Traverse(wxDirTraverser& sink,
             if ( res == wxDIR_STOP )
                 break;
 
+            wxASSERT_MSG( res == wxDIR_CONTINUE,
+                          wxT("unexpected OnFile() return value") );
+
             nFiles++;
 
             cont = GetNext(&filename);
@@ -207,6 +245,8 @@ size_t wxDir::GetAllFiles(const wxString& dirname,
                           const wxString& filespec,
                           int flags)
 {
+    wxCHECK_MSG( files, (size_t)-1, wxT("NULL pointer in wxDir::GetAllFiles") );
+
     size_t nFiles = 0;
 
     wxDir dir(dirname);
@@ -270,6 +310,77 @@ wxString wxDir::FindFirst(const wxString& dirname,
 
 
 // ----------------------------------------------------------------------------
+// wxDir::GetTotalSize()
+// ----------------------------------------------------------------------------
+
+#if wxUSE_LONGLONG
+
+class wxDirTraverserSumSize : public wxDirTraverser
+{
+public:
+    wxDirTraverserSumSize() { }
+
+    virtual wxDirTraverseResult OnFile(const wxString& filename)
+    {
+        // wxFileName::GetSize won't use this class again as
+        // we're passing it a file and not a directory;
+        // thus we are sure to avoid an endless loop
+        wxULongLong sz = wxFileName::GetSize(filename);
+
+        if (sz == wxInvalidSize)
+        {
+            // if the GetSize() failed (this can happen because e.g. a
+            // file is locked by another process), we can proceed but
+            // we need to at least warn the user that the resulting
+            // final size could be not reliable (if e.g. the locked
+            // file is very big).
+            m_skippedFiles.Add(filename);
+            return wxDIR_CONTINUE;
+        }
+
+        m_sz += sz;
+        return wxDIR_CONTINUE;
+    }
+
+    virtual wxDirTraverseResult OnDir(const wxString& WXUNUSED(dirname))
+    {
+        return wxDIR_CONTINUE;
+    }
+
+    wxULongLong GetTotalSize() const
+        { return m_sz; }
+    const wxArrayString& GetSkippedFiles() const
+        { return m_skippedFiles; }
+
+protected:
+    wxULongLong m_sz;
+    wxArrayString m_skippedFiles;
+};
+
+wxULongLong wxDir::GetTotalSize(const wxString &dirname, wxArrayString *filesSkipped)
+{
+    if (!wxDirExists(dirname))
+        return wxInvalidSize;
+
+    // to get the size of this directory and its contents we need
+    // to recursively walk it...
+    wxDir dir(dirname);
+    if ( !dir.IsOpened() )
+        return wxInvalidSize;
+
+    wxDirTraverserSumSize traverser;
+    if (dir.Traverse(traverser) == (size_t)-1 )
+        return wxInvalidSize;
+
+    if (filesSkipped)
+        *filesSkipped = traverser.GetSkippedFiles();
+
+    return traverser.GetTotalSize();
+}
+
+#endif // wxUSE_LONGLONG
+
+// ----------------------------------------------------------------------------
 // wxDir helpers
 // ----------------------------------------------------------------------------
 
@@ -277,6 +388,12 @@ wxString wxDir::FindFirst(const wxString& dirname,
 bool wxDir::Exists(const wxString& dir)
 {
     return wxFileName::DirExists(dir);
+}
+
+/* static */
+bool wxDir::Make(const wxString &dir, int perm, int flags)
+{
+    return wxFileName::Mkdir(dir, perm, flags);
 }
 
 /* static */

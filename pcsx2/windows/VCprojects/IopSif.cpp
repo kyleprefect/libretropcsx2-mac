@@ -14,8 +14,8 @@
  */
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
 
+#include "Common.h"
 #include "Sif.h"
 
 #if FALSE
@@ -30,7 +30,7 @@ s32 PrepareEEWrite()
 
 s32 PrepareEERead()
 {
-	static __aligned16 u32 tag[4];
+	alignas(16) static u32 tag[4];
 
 	// Process DMA tag at hw_dma9.tadr
 	sif0.iop.data = *(sifData *)iopPhysMem(hw_dma9.tadr);
@@ -44,13 +44,22 @@ s32 PrepareEERead()
 	sif0.iop.counter = sif0words;
 
 	if (sif0tag.IRQ  || (sif0tag.ID & 4)) sif0.iop.end = true;
+	SIF_LOG("SIF0 IOP to EE Tag: madr=%lx, tadr=%lx, counter=%lx (%08X_%08X)"
+		"\n\tread tag: %x %x %x %x", hw_dma9.madr, hw_dma9.tadr, sif0.iop.counter, sif0words, sif0data,
+		tag[0], tag[1], tag[2], tag[3]);
 
 	sif0ch.unsafeTransfer(((tDMA_TAG*)(tag)));
 	sif0ch.madr = tag[1];
 	tDMA_TAG ptag(tag[0]);
 
+	SIF_LOG("SIF0 EE dest chain tag madr:%08X qwc:%04X id:%X irq:%d(%08X_%08X)",
+		sif0ch.madr, sif0ch.qwc, ptag.ID, ptag.IRQ, tag[1], tag[0]);
+
 	if (sif0ch.chcr.TIE && ptag.IRQ)
+	{
+		//Console.WriteLn("SIF0 TIE");
 		sif0.ee.end = true;
+	}
 
 	switch (ptag.ID)
 	{
@@ -74,8 +83,10 @@ s32 PrepareEERead()
 
 void FinalizeEERead()
 {
+	SIF_LOG("Sif0: End EE");
 	sif0.ee.end = false;
 	sif0.ee.busy = false;
+	SIF_LOG("CPU INT FIRED SIF0");
 	CPU_INT(DMAC_SIF0, 16);
 }
 
@@ -93,10 +104,12 @@ s32 DoSifRead(u32 iopAvailable)
 	u32 transferSizeWords = transferSizeBytes >> 2;
 	u32 transferSizeQWords = transferSizeBytes >> 4;
 
+	SIF_LOG("Write IOP to EE: +++++++++++ %lX of %lX", transferSizeWords, sif0.iop.counter);
+
 	tDMA_TAG *ptag = sif0ch.getAddr(sif0ch.madr, DMAC_SIF0, true);
 	if (ptag == NULL)
 	{
-		log_cb(RETRO_LOG_WARN, "Write IOP to EE: ptag == NULL\n");
+		DevCon.Warning("Write IOP to EE: ptag == NULL");
 		return false;
 	}
 
@@ -133,7 +146,7 @@ s32  CALLBACK sif0DmaRead  (s32 channel, u32* data, u32 bytesLeft, u32* bytesPro
 
 s32  CALLBACK sif0DmaWrite (s32 channel, u32* data, u32 bytesLeft, u32* bytesProcessed)
 {
-	log_cb(RETRO_LOG_WARN, "SIF0 Dma Write to iop?!\n");
+	DevCon.Warning("SIF0 Dma Write to iop?!");
 	*bytesProcessed=0; return 0;
 }
 
@@ -144,7 +157,7 @@ void CALLBACK sif0DmaInterrupt (s32 channel)
 
 s32  CALLBACK sif1DmaRead  (s32 channel, u32* data, u32 bytesLeft, u32* bytesProcessed)
 {
-	log_cb(RETRO_LOG_WARN, "SIF1 Dma Read from iop?!\n");
+	DevCon.Warning("SIF1 Dma Read from iop?!");
 	*bytesProcessed=0; return 0;
 }
 

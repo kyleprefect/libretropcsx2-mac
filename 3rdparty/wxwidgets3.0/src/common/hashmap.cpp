@@ -10,6 +10,11 @@
 
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
+
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #include "wx/hashmap.h"
 
 /* FYI: This is the "One-at-a-Time" algorithm by Bob Jenkins */
@@ -62,6 +67,9 @@ unsigned long _wxHashTableBase2::GetNextPrime( unsigned long n )
         if( n < *ptr )
             return *ptr;
     }
+
+    /* someone might try to alloc a 2^32-element hash table */
+    wxFAIL_MSG( wxT("hash table too big?") );
 
     /* quiet warning */
     return 0;

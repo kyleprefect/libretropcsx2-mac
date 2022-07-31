@@ -59,14 +59,65 @@
             __WX_BO_STRINGIZE(__GNUC__) "." __WX_BO_STRINGIZE(__GNUC_MINOR__)
 #elif defined(__VISUALC__)
     #define __WX_BO_COMPILER ",Visual C++ " __WX_BO_STRINGIZE(_MSC_VER)
+#elif defined(__INTEL_COMPILER)
+    // Notice that this must come after MSVC check as ICC under Windows is
+    // ABI-compatible with the corresponding version of the MSVC and we want to
+    // allow using it compile the application code using MSVC-built DLLs.
+    #define __WX_BO_COMPILER ",Intel C++"
+#elif defined(__BORLANDC__)
+    #define __WX_BO_COMPILER ",Borland C++"
+#elif defined(__DIGITALMARS__)
+    #define __WX_BO_COMPILER ",DigitalMars"
+#elif defined(__WATCOMC__)
+    #define __WX_BO_COMPILER ",Watcom C++"
 #else
     #define __WX_BO_COMPILER
 #endif
 
-#define __WX_BO_WXWIN_COMPAT_2_6
-#define __WX_BO_WXWIN_COMPAT_2_8
+// WXWIN_COMPATIBILITY macros affect presence of virtual functions
+#if WXWIN_COMPATIBILITY_2_6
+    #define __WX_BO_WXWIN_COMPAT_2_6 ",compatible with 2.6"
+#else
+    #define __WX_BO_WXWIN_COMPAT_2_6
+#endif
+#if WXWIN_COMPATIBILITY_2_8
+    #define __WX_BO_WXWIN_COMPAT_2_8 ",compatible with 2.8"
+#else
+    #define __WX_BO_WXWIN_COMPAT_2_8
+#endif
 
 // deriving wxWin containers from STL ones changes them completely:
-#define __WX_BO_STL ",wx containers"
+#if wxUSE_STD_CONTAINERS
+    #define __WX_BO_STL ",STL containers"
+#else
+    #define __WX_BO_STL ",wx containers"
+#endif
+
+// This macro is passed as argument to wxConsoleApp::CheckBuildOptions()
+#define WX_BUILD_OPTIONS_SIGNATURE \
+    __WX_BO_VERSION(wxMAJOR_VERSION, wxMINOR_VERSION, wxRELEASE_NUMBER) \
+    " (" __WX_BO_UNICODE \
+     __WX_BO_COMPILER \
+     __WX_BO_STL \
+     __WX_BO_WXWIN_COMPAT_2_6 __WX_BO_WXWIN_COMPAT_2_8 \
+     ")"
+
+
+// ----------------------------------------------------------------------------
+// WX_CHECK_BUILD_OPTIONS
+// ----------------------------------------------------------------------------
+
+// Use this macro to check build options. Adding it to a file in DLL will
+// ensure that the DLL checks build options in same way wxIMPLEMENT_APP() does.
+#define WX_CHECK_BUILD_OPTIONS(libName)                                 \
+    static struct wxBuildOptionsChecker                                 \
+    {                                                                   \
+        wxBuildOptionsChecker()                                         \
+        {                                                               \
+            wxAppConsole::CheckBuildOptions(WX_BUILD_OPTIONS_SIGNATURE, \
+                                            libName);                   \
+        }                                                               \
+    } gs_buildOptionsCheck;
+
 
 #endif // _WX_BUILD_H_

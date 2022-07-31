@@ -48,6 +48,7 @@
 #include "cleanup.c"
 #include "condvar.c"
 #include "create.c"
+#include "dll.c"
 #include "autostatic.c"
 #include "errno.c"
 #include "exit.c"

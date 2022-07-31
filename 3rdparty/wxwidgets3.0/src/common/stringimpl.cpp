@@ -23,6 +23,10 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #ifndef WX_PRECOMP
     #include "wx/stringimpl.h"
     #include "wx/wxcrt.h"
@@ -30,7 +34,9 @@
 
 #include <ctype.h>
 
-#include <errno.h>
+#ifndef __WXWINCE__
+    #include <errno.h>
+#endif
 
 #include <string.h>
 #include <stdlib.h>
@@ -98,6 +104,43 @@ const wxStringCharType WXDLLIMPEXP_BASE *wxEmptyString = &g_strEmpty.dummy;
 
 
 #if !wxUSE_STL_BASED_WXSTRING
+
+// ----------------------------------------------------------------------------
+// private classes
+// ----------------------------------------------------------------------------
+
+// this small class is used to gather statistics for performance tuning
+
+// uncomment this to enable gathering of some statistics about wxString
+// efficiency
+//#define WXSTRING_STATISTICS
+
+#ifdef  WXSTRING_STATISTICS
+  class Averager
+  {
+  public:
+    Averager(const wxStringCharType *sz) { m_sz = sz; m_nTotal = m_nCount = 0; }
+   ~Averager()
+    {
+        wxPrintf("wxString %s: total = %lu, average = %f\n",
+                 m_sz, m_nTotal, ((float)m_nTotal)/m_nCount);
+    }
+
+    void Add(size_t n) { m_nTotal += n; m_nCount++; }
+
+  private:
+    unsigned long m_nCount, m_nTotal;
+    const wxStringCharType *m_sz;
+  } g_averageLength("allocation size"),
+    g_averageSummandLength("summand length"),
+    g_averageConcatHit("hit probability in concat"),
+    g_averageInitialLength("initial string length");
+
+  #define STATISTICS_ADD(av, val) g_average##av.Add(val)
+#else
+  #define STATISTICS_ADD(av, val)
+#endif // WXSTRING_STATISTICS
+
 // ===========================================================================
 // wxStringData class deallocation
 // ===========================================================================
@@ -121,13 +164,20 @@ void wxStringImpl::InitWith(const wxStringCharType *psz,
   Init();
 
   // if the length is not given, assume the string to be NUL terminated
-  if ( nLength == npos )
+  if ( nLength == npos ) {
+    wxASSERT_MSG( nPos <= wxStrlen(psz), wxT("index out of bounds") );
+
     nLength = wxStrlen(psz + nPos);
+  }
+
+  STATISTICS_ADD(InitialLength, nLength);
 
   if ( nLength > 0 ) {
     // trailing '\0' is written in AllocBuffer()
-    if ( !AllocBuffer(nLength) )
+    if ( !AllocBuffer(nLength) ) {
+      wxFAIL_MSG( wxT("out of memory in wxStringImpl::InitWith") );
       return;
+    }
     wxStringMemcpy(m_pchData, psz + nPos, nLength);
   }
 }
@@ -135,9 +185,14 @@ void wxStringImpl::InitWith(const wxStringCharType *psz,
 wxStringImpl::wxStringImpl(const_iterator first, const_iterator last)
 {
   if ( last >= first )
+  {
     InitWith(first.GetPtr(), 0, last - first);
+  }
   else
+  {
+    wxFAIL_MSG( wxT("first must be before last") );
     Init();
+  }
 }
 
 wxStringImpl::wxStringImpl(size_type n, wxStringCharType ch)
@@ -153,6 +208,16 @@ wxStringImpl::wxStringImpl(size_type n, wxStringCharType ch)
 // allocates memory needed to store a C string of length nLen
 bool wxStringImpl::AllocBuffer(size_t nLen)
 {
+  // allocating 0 sized buffer doesn't make sense, all empty strings should
+  // reuse g_strEmpty
+  wxASSERT( nLen >  0 );
+
+  // make sure that we don't overflow
+  wxCHECK( nLen < (INT_MAX / sizeof(wxStringCharType)) -
+                  (sizeof(wxStringData) + EXTRA_ALLOC + 1), false );
+
+  STATISTICS_ADD(Length, nLen);
+
   // allocate memory:
   // 1) one extra character for '\0' termination
   // 2) sizeof(wxStringData) for housekeeping info
@@ -187,12 +252,16 @@ bool wxStringImpl::CopyBeforeWrite()
     wxStringMemcpy(m_pchData, pData->data(), nLen);
   }
 
+  wxASSERT( !GetStringData()->IsShared() );  // we must be the only owner
+
   return true;
 }
 
 // must be called before replacing contents of this string
 bool wxStringImpl::AllocBeforeWrite(size_t nLen)
 {
+  wxASSERT( nLen != 0 );  // doesn't make any sense
+
   // must not share string and must have enough space
   wxStringData* pData = GetStringData();
   if ( pData->IsShared() || pData->IsEmpty() ) {
@@ -207,6 +276,8 @@ bool wxStringImpl::AllocBeforeWrite(size_t nLen)
     if ( nLen > pData->nAllocLength ) {
       // realloc the buffer instead of calling malloc() again, this is more
       // efficient
+      STATISTICS_ADD(Length, nLen);
+
       nLen += EXTRA_ALLOC;
 
       pData = (wxStringData*)
@@ -224,6 +295,8 @@ bool wxStringImpl::AllocBeforeWrite(size_t nLen)
     }
   }
 
+  wxASSERT( !GetStringData()->IsShared() );  // we must be the only owner
+
   // it doesn't really matter what the string length is as it's going to be
   // overwritten later but, for extra safety, set it to 0 for now as we may
   // have some junk in m_pchData
@@ -236,8 +309,10 @@ wxStringImpl& wxStringImpl::append(size_t n, wxStringCharType ch)
 {
     size_type len = length();
 
-    if ( !Alloc(len + n) || !CopyBeforeWrite() )
+    if ( !Alloc(len + n) || !CopyBeforeWrite() ) {
+      wxFAIL_MSG( wxT("out of memory in wxStringImpl::append") );
       return *this;
+    }
     GetStringData()->nDataLength = len + n;
     m_pchData[len + n] = '\0';
     for ( size_t i = 0; i < n; ++i )
@@ -266,6 +341,8 @@ bool wxStringImpl::Alloc(size_t nLen)
   wxStringData *pData = GetStringData();
   if ( pData->nAllocLength <= nLen ) {
     if ( pData->IsEmpty() ) {
+      STATISTICS_ADD(Length, nLen);
+
       nLen += EXTRA_ALLOC;
 
       pData = (wxStringData *)
@@ -338,6 +415,7 @@ wxStringImpl::iterator wxStringImpl::erase(iterator it)
 
 wxStringImpl& wxStringImpl::erase(size_t nStart, size_t nLen)
 {
+    wxASSERT(nStart <= length());
     size_t strLen = length() - nStart;
     // delete nLen or up to the end of the string characters
     nLen = strLen < nLen ? strLen : nLen;
@@ -351,11 +429,15 @@ wxStringImpl& wxStringImpl::erase(size_t nStart, size_t nLen)
 wxStringImpl& wxStringImpl::insert(size_t nPos,
                                    const wxStringCharType *sz, size_t n)
 {
+    wxASSERT( nPos <= length() );
+
     if ( n == npos ) n = wxStrlen(sz);
     if ( n == 0 ) return *this;
 
-    if ( !Alloc(length() + n) || !CopyBeforeWrite() )
+    if ( !Alloc(length() + n) || !CopyBeforeWrite() ) {
+        wxFAIL_MSG( wxT("out of memory in wxStringImpl::insert") );
         return *this;
+    }
 
     memmove(m_pchData + nPos + n, m_pchData + nPos,
             (length() - nPos) * sizeof(wxStringCharType));
@@ -390,6 +472,9 @@ size_t wxStringImpl::find(const wxStringImpl& str, size_t nStart) const
         // the other string is non empty so can't be our substring
         return npos;
     }
+
+    wxASSERT( str.GetStringData()->IsValid() );
+    wxASSERT( nStart <= nLen );
 
     const wxStringCharType * const other = str.c_str();
 
@@ -426,6 +511,8 @@ size_t wxStringImpl::find(const wxStringCharType* sz,
 
 size_t wxStringImpl::find(wxStringCharType ch, size_t nStart) const
 {
+    wxASSERT( nStart <= length() );
+
     const wxStringCharType *p = (const wxStringCharType*)
         wxStringMemchr(c_str() + nStart, ch, length() - nStart);
 
@@ -434,6 +521,9 @@ size_t wxStringImpl::find(wxStringCharType ch, size_t nStart) const
 
 size_t wxStringImpl::rfind(const wxStringImpl& str, size_t nStart) const
 {
+    wxASSERT( str.GetStringData()->IsValid() );
+    wxASSERT( nStart == npos || nStart <= length() );
+
     if ( length() >= str.length() )
     {
         // avoids a corner case later
@@ -470,7 +560,13 @@ size_t wxStringImpl::rfind(const wxStringCharType* sz,
 size_t wxStringImpl::rfind(wxStringCharType ch, size_t nStart) const
 {
     if ( nStart == npos )
+    {
         nStart = length();
+    }
+    else
+    {
+        wxASSERT( nStart <= length() );
+    }
 
     const wxStringCharType *actual;
     for ( actual = c_str() + ( nStart == npos ? length() : nStart + 1 );
@@ -488,6 +584,9 @@ wxStringImpl& wxStringImpl::replace(size_t nStart, size_t nLen,
 {
     // check and adjust parameters
     const size_t lenOld = length();
+
+    wxASSERT_MSG( nStart <= lenOld,
+                  wxT("index out of bounds in wxStringImpl::replace") );
     size_t nEnd = nStart + nLen;
     if ( nLen > lenOld - nStart )
     {
@@ -532,6 +631,8 @@ wxStringImpl wxStringImpl::substr(size_t nStart, size_t nLen) const
 // assigns one string to another
 wxStringImpl& wxStringImpl::operator=(const wxStringImpl& stringSrc)
 {
+  wxASSERT( stringSrc.GetStringData()->IsValid() );
+
   // don't copy string over itself
   if ( m_pchData != stringSrc.m_pchData ) {
     if ( stringSrc.GetStringData()->IsEmpty() ) {
@@ -552,14 +653,18 @@ wxStringImpl& wxStringImpl::operator=(const wxStringImpl& stringSrc)
 wxStringImpl& wxStringImpl::operator=(wxStringCharType ch)
 {
   wxStringCharType c(ch);
-  AssignCopy(1, &c);
+  if ( !AssignCopy(1, &c) ) {
+    wxFAIL_MSG( wxT("out of memory in wxStringImpl::operator=(wxStringCharType)") );
+  }
   return *this;
 }
 
 // assigns C string
 wxStringImpl& wxStringImpl::operator=(const wxStringCharType *psz)
 {
-  AssignCopy(wxStrlen(psz), psz);
+  if ( !AssignCopy(wxStrlen(psz), psz) ) {
+    wxFAIL_MSG( wxT("out of memory in wxStringImpl::operator=(const wxStringCharType *)") );
+  }
   return *this;
 }
 
@@ -595,6 +700,8 @@ bool wxStringImpl::ConcatSelf(size_t nSrcLen,
                               const wxStringCharType *pszSrcData,
                               size_t nMaxLen)
 {
+  STATISTICS_ADD(SummandLength, nSrcLen);
+
   nSrcLen = nSrcLen < nMaxLen ? nSrcLen : nMaxLen;
 
   // concatenating an empty string is a NOP
@@ -616,6 +723,8 @@ bool wxStringImpl::ConcatSelf(size_t nSrcLen,
 
     // alloc new buffer if current is too small
     if ( pData->IsShared() ) {
+      STATISTICS_ADD(ConcatHit, 0);
+
       // we have to allocate another buffer
       wxStringData* pOldData = GetStringData();
       if ( !AllocBuffer(nNewLen) ) {
@@ -626,6 +735,8 @@ bool wxStringImpl::ConcatSelf(size_t nSrcLen,
       pOldData->Unlock();
     }
     else if ( nNewLen > pData->nAllocLength ) {
+      STATISTICS_ADD(ConcatHit, 0);
+
       reserve(nNewLen);
       // we have to grow the buffer
       if ( capacity() < nNewLen ) {
@@ -633,6 +744,14 @@ bool wxStringImpl::ConcatSelf(size_t nSrcLen,
           return false;
       }
     }
+    else {
+      STATISTICS_ADD(ConcatHit, 1);
+
+      // the buffer is already big enough
+    }
+
+    // should be enough space
+    wxASSERT( nNewLen <= GetStringData()->nAllocLength );
 
     // fast concatenation - all is done in our buffer
     memcpy(m_pchData + nLen, pszSrcData, nSrcLen*sizeof(wxStringCharType));
@@ -647,10 +766,12 @@ bool wxStringImpl::ConcatSelf(size_t nSrcLen,
 // get the pointer to writable buffer of (at least) nLen bytes
 wxStringCharType *wxStringImpl::DoGetWriteBuf(size_t nLen)
 {
-  // allocation failure handled by caller
-  if ( !AllocBeforeWrite(nLen) )
+  if ( !AllocBeforeWrite(nLen) ) {
+    // allocation failure handled by caller
     return NULL;
+  }
 
+  wxASSERT( GetStringData()->nRefs == 1 );
   GetStringData()->Validate(false);
 
   return m_pchData;
@@ -665,6 +786,8 @@ void wxStringImpl::DoUngetWriteBuf()
 void wxStringImpl::DoUngetWriteBuf(size_t nLen)
 {
   wxStringData * const pData = GetStringData();
+
+  wxASSERT_MSG( nLen < pData->nAllocLength, wxT("buffer overrun") );
 
   // the strings we store are always NUL-terminated
   pData->data()[nLen] = wxT('\0');

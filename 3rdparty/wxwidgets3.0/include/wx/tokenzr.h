@@ -57,6 +57,8 @@ public:
     void Reinit(const wxString& str);
 
     // tokens access
+        // return the number of remaining tokens
+    size_t CountTokens() const;
         // did we reach the end of the string?
     bool HasMoreTokens() const;
         // get the next token, will return empty string if !HasMoreTokens()

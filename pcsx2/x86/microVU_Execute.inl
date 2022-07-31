@@ -16,78 +16,20 @@
 #pragma once
 
 //------------------------------------------------------------------
-// Cleanup Functions
-//------------------------------------------------------------------
-
-template<int vuIndex>
-static void mVUcleanUp(void)
-{
-	microVU& mVU = mVUx;
-
-	mVU.prog.x86ptr = x86Ptr;
-
-	if ((xGetPtr() < mVU.prog.x86start) || (xGetPtr() >= mVU.prog.x86end))
-		mVUreset(mVU, false);
-
-	mVU.cycles = mVU.totalCycles - mVU.cycles;
-	mVU.regs().cycle += mVU.cycles;
-
-	if (!vuIndex || !THREAD_VU1) {
-		u32 cycles_passed = std::min(mVU.cycles, 3000u) * EmuConfig.Speedhacks.EECycleSkip;
-		if (cycles_passed > 0) {
-			s32 vu0_offset = VU0.cycle - cpuRegs.cycle;
-			cpuRegs.cycle += cycles_passed;
-
-			// VU0 needs to stay in sync with the CPU otherwise things get messy
-			// So we need to adjust when VU1 skips cycles also
-			if (!vuIndex)
-				VU0.cycle = cpuRegs.cycle + vu0_offset;
-			else
-				VU0.cycle += cycles_passed;
-		}
-	}
-}
-
-//------------------------------------------------------------------
-// Execution Functions
-//------------------------------------------------------------------
-
-// Executes for number of cycles
-template<int vuIndex>
-static void* __fastcall mVUexecute(u32 startPC, u32 cycles)
-{
-	microVU& mVU 	= mVUx;
-	u32 vuLimit  	= vuIndex ? 0x3ff8 : 0xff8;
-	mVU.cycles	= cycles;
-	mVU.totalCycles = cycles;
-
-	xSetPtr(mVU.prog.x86ptr); // Set x86ptr to where last program left off
-	return mVUsearchProg<vuIndex>(startPC & vuLimit, (uptr)&mVU.prog.lpState); // Find and set correct program
-}
-
-//------------------------------------------------------------------
-// Caller Functions
-//------------------------------------------------------------------
-
-static void* __fastcall mVUexecuteVU0(u32 startPC, u32 cycles) { return mVUexecute<0>(startPC, cycles); }
-static void* __fastcall mVUexecuteVU1(u32 startPC, u32 cycles) { return mVUexecute<1>(startPC, cycles); }
-static void  __fastcall mVUcleanUpVU0() { mVUcleanUp<0>(); }
-static void  __fastcall mVUcleanUpVU1() { mVUcleanUp<1>(); }
-
-//------------------------------------------------------------------
 // Dispatcher Functions
 //------------------------------------------------------------------
 
 // Generates the code for entering/exit recompiled blocks
-void mVUdispatcherAB(mV) {
+void mVUdispatcherAB(mV)
+{
 	mVU.startFunct = x86Ptr;
 
 	{
 		xScopedStackFrame frame(false, true);
 
-		// __fastcall = The caller has already put the needed parameters in ecx/edx:
-		if (!isVU1)	{ xFastCall((void*)mVUexecuteVU0, arg1reg, arg2reg); }
-		else		{ xFastCall((void*)mVUexecuteVU1, arg1reg, arg2reg); }
+		// = The caller has already put the needed parameters in ecx/edx:
+		if (!isVU1) xFastCall((void*)mVUexecuteVU0, arg1reg, arg2reg);
+		else        xFastCall((void*)mVUexecuteVU1, arg1reg, arg2reg);
 
 		// Load VU's MXCSR state
 		xLDMXCSR(g_sseVUMXCSR);
@@ -101,7 +43,7 @@ void mVUdispatcherAB(mV) {
 		xPSHUF.D(xmmPQ, xmmPQ, 0xe1);
 		xMOVSS(xmmPQ, xmmT2);
 		xPSHUF.D(xmmPQ, xmmPQ, 0xe1);
-		
+
 		if (isVU1)
 		{
 			//Load in other P instance
@@ -131,17 +73,21 @@ void mVUdispatcherAB(mV) {
 		// Load EE's MXCSR state
 		xLDMXCSR(g_sseMXCSR);
 
-		// __fastcall = The first two DWORD or smaller arguments are passed in ECX and EDX registers;
+		// = The first two DWORD or smaller arguments are passed in ECX and EDX registers;
 		//              all other arguments are passed right to left.
-		if (!isVU1) { xFastCall((void*)mVUcleanUpVU0); }
-		else		{ xFastCall((void*)mVUcleanUpVU1); }
+		if (!isVU1) xFastCall((void*)mVUcleanUpVU0);
+		else        xFastCall((void*)mVUcleanUpVU1);
 	}
 
 	xRET();
+
+	pxAssertDev(xGetPtr() < (mVU.dispCache + mVUdispCacheSize),
+		"microVU: Dispatcher generation exceeded reserved cache area!");
 }
 
 // Generates the code for resuming/exit xgkick
-void mVUdispatcherCD(mV) {
+void mVUdispatcherCD(mV)
+{
 	mVU.startFunctXG = x86Ptr;
 
 	{
@@ -169,9 +115,79 @@ void mVUdispatcherCD(mV) {
 
 		// Load EE's MXCSR state
 		xLDMXCSR(g_sseMXCSR);
-
 	}
 
 	xRET();
+
+	pxAssertDev(xGetPtr() < (mVU.dispCache + mVUdispCacheSize),
+		"microVU: Dispatcher generation exceeded reserved cache area!");
 }
 
+//------------------------------------------------------------------
+// Execution Functions
+//------------------------------------------------------------------
+
+// Executes for number of cycles
+_mVUt void* mVUexecute(u32 startPC, u32 cycles)
+{
+
+	microVU& mVU = mVUx;
+	u32 vuLimit = vuIndex ? 0x3ff8 : 0xff8;
+	if (startPC > vuLimit + 7)
+	{
+		DevCon.Warning("microVU%x Warning: startPC = 0x%x, cycles = 0x%x", vuIndex, startPC, cycles);
+	}
+
+	mVU.cycles = cycles;
+	mVU.totalCycles = cycles;
+
+	xSetPtr(mVU.prog.x86ptr); // Set x86ptr to where last program left off
+	return mVUsearchProg<vuIndex>(startPC & vuLimit, (uptr)&mVU.prog.lpState); // Find and set correct program
+}
+
+//------------------------------------------------------------------
+// Cleanup Functions
+//------------------------------------------------------------------
+
+_mVUt void mVUcleanUp()
+{
+	microVU& mVU = mVUx;
+
+	mVU.prog.x86ptr = x86Ptr;
+
+	if ((xGetPtr() < mVU.prog.x86start) || (xGetPtr() >= mVU.prog.x86end))
+	{
+		Console.WriteLn(vuIndex ? Color_Orange : Color_Magenta, "microVU%d: Program cache limit reached.", mVU.index);
+		mVUreset(mVU, false);
+	}
+
+	mVU.cycles = mVU.totalCycles - mVU.cycles;
+	mVU.regs().cycle += mVU.cycles;
+
+	if (!vuIndex || !THREAD_VU1)
+	{
+		u32 cycles_passed = std::min(mVU.cycles, 3000u) * EmuConfig.Speedhacks.EECycleSkip;
+		if (cycles_passed > 0)
+		{
+			s32 vu0_offset = VU0.cycle - cpuRegs.cycle;
+			cpuRegs.cycle += cycles_passed;
+
+			// VU0 needs to stay in sync with the CPU otherwise things get messy
+			// So we need to adjust when VU1 skips cycles also
+			if (!vuIndex)
+				VU0.cycle = cpuRegs.cycle + vu0_offset;
+			else
+				VU0.cycle += cycles_passed;
+		}
+	}
+	mVU.profiler.Print();
+}
+
+//------------------------------------------------------------------
+// Caller Functions
+//------------------------------------------------------------------
+
+void* mVUexecuteVU0(u32 startPC, u32 cycles) { return mVUexecute<0>(startPC, cycles); }
+void* mVUexecuteVU1(u32 startPC, u32 cycles) { return mVUexecute<1>(startPC, cycles); }
+void mVUcleanUpVU0() { mVUcleanUp<0>(); }
+void mVUcleanUpVU1() { mVUcleanUp<1>(); }

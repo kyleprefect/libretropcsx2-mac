@@ -14,6 +14,7 @@
  */
 
 #pragma once
+#include "common/Pcsx2Defs.h"
 
 namespace Ps2MemSize
 {
@@ -113,8 +114,8 @@ struct IopVM_MemoryAllocMess
 // order to allow for simpler macros and reference handles to be defined  (we can safely use
 // compile-time references to registers instead of having to use instance variables).
 
-extern __pagealigned u8 eeHw[Ps2MemSize::Hardware];
-extern __pagealigned u8 iopHw[Ps2MemSize::IopHardware];
+alignas(__pagesize) extern u8 eeHw[Ps2MemSize::Hardware];
+alignas(__pagesize) extern u8 iopHw[Ps2MemSize::IopHardware];
 
 
 extern EEVM_MemoryAllocMess* eeMem;

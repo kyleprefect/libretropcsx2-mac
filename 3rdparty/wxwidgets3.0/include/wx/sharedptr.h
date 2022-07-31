@@ -21,6 +21,8 @@ template <class T>
 class wxSharedPtr
 {
 public:
+    typedef T element_type;
+
     wxEXPLICIT wxSharedPtr( T* ptr = NULL )
         : m_ref(NULL)
     {
@@ -73,11 +75,15 @@ public:
 
     T& operator*() const
     {
+        wxASSERT(m_ref != NULL);
+        wxASSERT(m_ref->m_ptr != NULL);
         return *(m_ref->m_ptr);
     }
 
     T* operator->() const
     {
+        wxASSERT(m_ref != NULL);
+        wxASSERT(m_ref->m_ptr != NULL);
         return m_ref->m_ptr;
     }
 

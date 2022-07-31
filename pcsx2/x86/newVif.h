@@ -18,14 +18,14 @@
 #include "Vif.h"
 #include "VU.h"
 
-#include "x86emitter/x86emitter.h"
+#include "common/emitter/x86emitter.h"
 #include "System/RecTypes.h"
 
 using namespace x86Emitter;
 
 // newVif_HashBucket.h uses this typedef, so it has to be declared first.
-typedef u32  (__fastcall *nVifCall)(void*, const void*);
-typedef void (__fastcall *nVifrecCall)(uptr dest, uptr src);
+typedef u32  (*nVifCall)(void*, const void*);
+typedef void (*nVifrecCall)(uptr dest, uptr src);
 
 #include "newVif_HashBucket.h"
 
@@ -35,16 +35,16 @@ extern void  dVifReserve (int idx);
 extern void  dVifReset   (int idx);
 extern void  dVifClose   (int idx);
 extern void  dVifRelease (int idx);
-extern void  VifUnpackSSE_Init(void);
-extern void  VifUnpackSSE_Destroy(void);
+extern void  VifUnpackSSE_Init();
+extern void  VifUnpackSSE_Destroy();
 
-_vifT extern void  dVifUnpack  (const u8* data, bool isFill);
+_vifT extern void dVifUnpack(const u8* data, bool isFill);
 
 #define VUFT VIFUnpackFuncTable
-#define	_v0 0
-#define	_v1 0x55
-#define	_v2 0xaa
-#define	_v3 0xff
+#define _v0 0
+#define _v1 0x55
+#define _v2 0xaa
+#define _v3 0xff
 #define xmmCol0 xmm2
 #define xmmCol1 xmm3
 #define xmmCol2 xmm4
@@ -52,26 +52,32 @@ _vifT extern void  dVifUnpack  (const u8* data, bool isFill);
 #define xmmRow  xmm6
 #define xmmTemp xmm7
 
-struct nVifStruct {
+struct nVifStruct
+{
 	// Buffer for partial transfers (should always be first to ensure alignment)
 	// Maximum buffer size is 256 (vifRegs.Num max range) * 16 (quadword)
-	__aligned16 u8			buffer[256*16];
-	u32						bSize;			// Size of 'buffer'
+	alignas(16) u8 buffer[256*16];
+	u32            bSize; // Size of 'buffer'
 
 	// VIF0 or VIF1 - provided for debugging helpfulness only, and is generally unused.
 	// (templates are used for most or all VIF indexing)
-	u32						idx;
+	u32                     idx;
 
-	RecompiledCodeReserve*	recReserve;
-	u8*						recWritePtr;		// current write pos into the reserve
+	RecompiledCodeReserve*  recReserve;
+	u8*                     recWritePtr; // current write pos into the reserve
 
-	HashBucket				vifBlocks;		// Vif Blocks
+	HashBucket              vifBlocks;   // Vif Blocks
+
 
 	nVifStruct() = default;
 };
 
+extern void closeNewVif(int idx);
 extern void resetNewVif(int idx);
+extern void releaseNewVif(int idx);
 
-extern __aligned16 nVifStruct nVif[2];
-extern __aligned16 nVifCall nVifUpk[(2*2*16)*4]; // ([USN][Masking][Unpack Type]) [curCycle]
-extern __aligned16 u32      nVifMask[3][4][4];   // [MaskNumber][CycleNumber][Vector]
+alignas(16) extern nVifStruct nVif[2];
+alignas(16) extern nVifCall nVifUpk[(2 * 2 * 16) * 4]; // ([USN][Masking][Unpack Type]) [curCycle]
+alignas(16) extern u32      nVifMask[3][4][4];         // [MaskNumber][CycleNumber][Vector]
+
+static const bool newVifDynaRec = 1; // Use code in newVif_Dynarec.inl

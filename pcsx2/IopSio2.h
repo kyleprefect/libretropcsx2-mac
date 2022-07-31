@@ -61,11 +61,11 @@ struct sio2Struct {
 
 extern sio2Struct sio2;
 
-void sio2Reset(void);
+void sio2Reset();
 
-u32  sio2_getRecv1(void);
-u32  sio2_getRecv2(void);
-u32  sio2_getRecv3(void);
+u32  sio2_getRecv1();
+u32  sio2_getRecv2();
+u32  sio2_getRecv3();
 void sio2_setSend1(u32 index, u32 value);	//0->3
 u32  sio2_getSend1(u32 index);				//0->3
 void sio2_setSend2(u32 index, u32 value);	//0->3
@@ -74,23 +74,23 @@ void sio2_setSend3(u32 index, u32 value);	//0->15
 u32  sio2_getSend3(u32 index);				//0->15
 
 void sio2_setCtrl(u32 value);
-u32  sio2_getCtrl(void);
+u32  sio2_getCtrl();
 void sio2_setIntr(u32 value);
-u32  sio2_getIntr(void);
+u32  sio2_getIntr();
 void sio2_set8278(u32 value);
-u32  sio2_get8278(void);
+u32  sio2_get8278();
 void sio2_set827C(u32 value);
-u32  sio2_get827C(void);
+u32  sio2_get827C();
 
 void sio2_serialIn(u8 value);
 void sio2_fifoIn(u8 value);
-u8   sio2_fifoOut(void);
+u8   sio2_fifoOut();
 
 void psxDma11(u32 madr, u32 bcr, u32 chcr);
 void psxDma12(u32 madr, u32 bcr, u32 chcr);
 
-void psxDMA11Interrupt(void);
-void psxDMA12Interrupt(void);
+void psxDMA11Interrupt();
+void psxDMA12Interrupt();
 
 #endif /* __PSXSIO2_H__ */
 

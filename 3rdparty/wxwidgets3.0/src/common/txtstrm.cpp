@@ -11,6 +11,10 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+  #pragma hdrstop
+#endif
+
 #if wxUSE_STREAMS
 
 #include "wx/txtstrm.h"
@@ -75,6 +79,7 @@ wxChar wxTextInputStream::NextChar()
             case 0:
                 // this is a bug in converter object as it should either fail
                 // or decode non-empty string to something non-empty
+                wxFAIL_MSG("ToWChar() can't return 0 for non-empty input");
                 break;
 
             case wxCONV_FAILED:
@@ -86,6 +91,7 @@ wxChar wxTextInputStream::NextChar()
                 // if we couldn't decode a single character during the last
                 // loop iteration we shouldn't be able to decode 2 or more of
                 // them with an extra single byte, something fishy is going on
+                wxFAIL_MSG("unexpected decoding result");
                 // fall through nevertheless and return at least something
 
             case 1:
@@ -142,6 +148,7 @@ bool wxTextInputStream::EatEOL(const wxChar &c)
 
 wxUint32 wxTextInputStream::Read32(int base)
 {
+    wxASSERT_MSG( !base || (base > 1 && base <= 36), wxT("invalid base") );
     if(!m_input) return 0;
 
     wxString word = ReadWord();
@@ -162,6 +169,7 @@ wxUint8 wxTextInputStream::Read8(int base)
 
 wxInt32 wxTextInputStream::Read32S(int base)
 {
+    wxASSERT_MSG( !base || (base > 1 && base <= 36), wxT("invalid base") );
     if(!m_input) return 0;
 
     wxString word = ReadWord();
@@ -187,6 +195,34 @@ double wxTextInputStream::ReadDouble()
     if(word.empty())
         return 0;
     return wxStrtod(word.c_str(), 0);
+}
+
+#if WXWIN_COMPATIBILITY_2_6
+
+wxString wxTextInputStream::ReadString()
+{
+    return ReadLine();
+}
+
+#endif // WXWIN_COMPATIBILITY_2_6
+
+wxString wxTextInputStream::ReadLine()
+{
+    wxString line;
+
+    while ( !m_input.Eof() )
+    {
+        wxChar c = NextChar();
+        if(c == wxEOT)
+            break;
+
+        if (EatEOL(c))
+            break;
+
+        line += c;
+    }
+
+    return line;
 }
 
 wxString wxTextInputStream::ReadWord()
@@ -299,7 +335,7 @@ wxTextOutputStream::wxTextOutputStream(wxOutputStream& s, wxEOL mode)
     m_mode = mode;
     if (m_mode == wxEOL_NATIVE)
     {
-#if defined(__WINDOWS__)
+#if defined(__WINDOWS__) || defined(__WXPM__)
         m_mode = wxEOL_DOS;
 #else
         m_mode = wxEOL_UNIX;
@@ -312,6 +348,19 @@ wxTextOutputStream::~wxTextOutputStream()
 #if wxUSE_UNICODE
     delete m_conv;
 #endif // wxUSE_UNICODE
+}
+
+void wxTextOutputStream::SetMode(wxEOL mode)
+{
+    m_mode = mode;
+    if (m_mode == wxEOL_NATIVE)
+    {
+#if defined(__WINDOWS__) || defined(__WXPM__)
+        m_mode = wxEOL_DOS;
+#else
+        m_mode = wxEOL_UNIX;
+#endif
+    }
 }
 
 void wxTextOutputStream::Write32(wxUint32 i)
@@ -369,6 +418,7 @@ void wxTextOutputStream::WriteString(const wxString& string)
                     continue;
 
                 default:
+                    wxFAIL_MSG( wxT("unknown EOL mode in wxTextOutputStream") );
                     // fall through
 
                 case wxEOL_UNIX:

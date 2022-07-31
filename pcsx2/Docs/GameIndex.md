@@ -29,7 +29,6 @@ SERIAL-12345: # !required! Serial number for the game, this is how games are loo
     - FpuMulHack
     - FpuNegDivHack
     - XGKickHack
-    - IPUWaitHack
     - EETimingHack
     - SkipMPEGHack
     - OPHFlagHack
@@ -38,9 +37,14 @@ SERIAL-12345: # !required! Serial number for the game, this is how games are loo
     - VIF1StallHack
     - GIFFIFOHack
     - GoemonTlbHack
-    - ScarfaceIbitHack
-    - CrashTagTeamRacingIbitHack
-    - VU0KickstartHack
+    - IbitHack
+    - VUSyncHack
+    - VUOverflowHack
+    - SoftwareRendererFMVHack
+  # The value of the GS Fixes is assumed to be an integer
+  gsHWFixes:
+    mipmap: 1
+    preloadFrameData: 1
   # The value of the speedhacks is assumed to be an integer,
   # but at the time of writing speedhacks are effectively booleans (0/1)
   speedHacks:
@@ -49,7 +53,7 @@ SERIAL-12345: # !required! Serial number for the game, this is how games are loo
   memcardFilters:
     - "SERIAL-123"
     - "SERIAL-456"
-  # You can define multple patches, but they are identified by the CRC.
+  # You can define multiple patches, but they are identified by the CRC.
   patches:
     default: # Default CRC!
       author: "Some Person"
@@ -108,15 +112,61 @@ These modes can be specified either on the **EE** (`eeRoundMode`) or **VU** (`vu
 
 The clamp modes are also numerically based.
 
-*   `eeClampMode` refers to the EE's FPU co-processor
-*   `vuClampMode` refers to the VU's and COP2 (VU0 Macro-mode)
+*   `eeClampMode` refers to the EE's FPU co-processor and COP2
+*   `vuClampMode` refers to the VU's in micro mode
 
-### Options for clamping
+### eeClampMode
+
+*   `0` = **Disables** clamping completely
+*   `1` = Clamp **Normally** (only clamp results)
+*   `2` = Clamp **Extra+Preserve Sign** (clamp results as well as operands)
+*   `3` = **Full Clamping** for FPU
+
+### vuClampMode
 
 *   `0` = **Disables** clamping completely
 *   `1` = Clamp **Normally** (only clamp results)
 *   `2` = Clamp **Extra** (clamp results as well as operands)
-*   `3` = **Full Clamping** for FPU / Extra+Preserve Sign Clamping for VU
+*   `3` = Clamp **Extra+Preserve Sign**
+
+## GS Hardware Fixes
+
+[ ] = GameDB values
+{ } = GUI options
+( ) = Default values
+
+### GS Hardware Mipmap Fixes
+
+*   mipmap                     [`0` or `1` or `2`]    {Off, Basic, Full}                    Default: Automatic (No value, looks up GameDB)
+*   trilinearFiltering         [`0` or `1` or `2`]    {None, Trilinear, Trilinear Ultra}    Default: None (`0`)
+
+### GS Hardware General Fixes
+
+*   conservativeFramebuffer   [`0` or `1`]                 {Off or On}                                                                 Default: On (`1`)
+*   texturePreloading         [`0` or `1` or `2`]          {None, Partial or Full Hash Cache}                                          Default: None (`0`)
+*   deinterlace               [Value between `0` to `7`]   {Off, WeaveTFF, WeaveBFF, BobTFF, BobBFF, BlendTFF, BlendBFF, Automatic}    Default: Automatic (No value, looks up GameDB)
+
+### GS Hardware Renderer Fixes
+
+*   autoFlush                   [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   disableDepthSupport         [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   disablePartialInvalidation  [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   cpuFramebufferConversion    [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   wrapGSMem                   [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   preloadFrameData            [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   textureInsideRT             [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+*   halfBottomOverride          [`0` or `1`]   {Force-Disabled or Force-Enabled}    Default: Automatic (No value, looks up GameDB)
+*   pointListPalette            [`0` or `1`]   {Off or On}                          Default: Off (`0`)
+
+### GS Hardware Upscaling Fixes
+
+*   alignSprite              [`0` or `1`]                      {Off or On}       Default: Off (`0`)
+*   mergeSprite              [`0` or `1`]                      {Off or On}       Default: Off (`0`)
+*   wildArmsHack             [`0` or `1`]                      {Off or On}       Default: Off (`0`)
+*   skipDrawStart            [Value between `0` to `100000`]   {0-100000}        Default: Off (`0`)
+*   skipDrawEnd              [Value between `0` to `100000`]   {0-100000}        Default: Off (`0`)
+*   halfPixelOffset          [`0` or `1` or `2` or `3`]   {Off, Normal Vertex, Special Texture or Special Texture Aggressive}    Default: Off (`0`)
+*   roundSprite              [`0` or `1` or `2`]          {Off, Half or Full}    Default: Off (`0`)
 
 ## Game Fixes
 
@@ -134,10 +184,7 @@ These values are case-sensitive so take care.  If you incorrectly specify a Game
     *   Gundam games messed up camera-view. Dakar 2's sky showing over 3D. Others...
 
 *   `XGKickHack`
-    *   Erementar Gerad, adds more delay to VU XGkick instructions. Corrects the color of some graphics, but breaks Tri-ace.
-
-*   `IPUWaitHack`
-    *   FFX FMV, makes GIF flush before doing IPU work. Fixes bad graphics overlay.
+    *   Use accurate timing for VU XGKicks (Slower). Fixes graphical errors on WRC, Erementar Gerad, Tennis Court Smash and others.
 
 *   `EETimingHack`
     *   General purpose timing hack.
@@ -163,14 +210,17 @@ These values are case-sensitive so take care.  If you incorrectly specify a Game
 *   `GoemonTlbHack`
     *   Preload TLB hack to avoid tlb miss on Goemon.
 
-*   `ScarfaceIbitHack`
-    *   VU I bit Hack avoid constant recompilation (Scarface The World Is Yours).
+*   `IbitHack`
+    *   VU I bit Hack avoid constant recompilation in some games (Scarface The World Is Yours, Crash Tag Team Racing).
 
-*   `CrashTagTeamRacingIbitHack`
-    *   VU I bit Hack avoid constant recompilation (Crash Tag Team Racing).
+*   `VUSyncHack`
+    *   Make the VU's run behind/in sync with the EE to fix some timing issues.
 
-*   `VU0KickstartHack`
-    *   Let VU0 run ahead to fix some timing issues
+*   `VUOverflowHack`
+    *   VU Overflow hack to check for possible float overflows (Superman Returns).
+
+*   `SoftwareRendererFMVHack`
+    *   Forces rendering into software mode during FMVs.
 
 ## SpeedHacks
 
@@ -181,12 +231,12 @@ These values are in a key-value format, where the value is assumed to be an inte
 *   `mvuFlagSpeedHack`
 *   Accepted Values - `0` / `1`
 *   Katamari Damacy have weird speed bug when this speed hack is enabled (and it is by default)
-
-<!-- [list-item-spacing] Missing new line after list item->
-
--   `InstantVU1SpeedHack`
--   Accepted Values - `0` / `1`
--   Games such as Parappa the Rapper 2 need VU1 to sync, so you can force disable the speedhack here
+*   `MTVUSpeedHack`
+*   Accepted Values - `0` / `1`
+*   T-bit games dislike MTVU and some games are incompatible with MTVU.
+*   `InstantVU1SpeedHack`
+*   Accepted Values - `0` / `1`
+*   Games such as Parappa the Rapper 2 need VU1 to sync, so you can force sync with this parameter.
 
 ## Memory Card Filter Override
 

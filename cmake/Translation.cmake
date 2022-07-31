@@ -32,54 +32,68 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-MACRO(GETTEXT_CREATE_TRANSLATIONS_PCSX2 _potFile _firstPoFileArg)
-    # make it a real variable, so we can modify it here
-    SET(_firstPoFile "${_firstPoFileArg}")
+FUNCTION(GETTEXT_CREATE_TRANSLATIONS_PCSX2 _potFile)
+	SET(_moFiles)
+	GET_FILENAME_COMPONENT(_potBasename ${_potFile} NAME_WE)
+	GET_FILENAME_COMPONENT(_absPotFile ${_potFile} ABSOLUTE)
 
-    SET(_gmoFiles)
-    GET_FILENAME_COMPONENT(_potBasename ${_potFile} NAME_WE)
-    GET_FILENAME_COMPONENT(_absPotFile ${_potFile} ABSOLUTE)
+	FOREACH (_currentPoFile ${ARGN})
+		GET_FILENAME_COMPONENT(_absFile ${_currentPoFile} ABSOLUTE)
+		GET_FILENAME_COMPONENT(_abs_PATH ${_absFile} DIRECTORY)
+		GET_FILENAME_COMPONENT(_lang ${_abs_PATH} NAME_WE)
+		SET(_moFile ${CMAKE_CURRENT_BINARY_DIR}/${_lang}/${_potBasename}.mo)
+		IF (APPLE)
+			# On MacOS, we have have to preprocess the po files to remove mnemonics:
+			# On Windows, menu items have "mnemonics", the items with a letter underlined that you can use with alt to select menu items.  MacOS doesn't do this.
+			# Some languages don't use easily-typable characters, so it's common to add a dedicated character for the mnemonic (e.g. in Japanese on Windows, the File menu would be "ファイル(&F)").
+			# On MacOS, these extra letters in parentheses are useless and should be avoided.
+			SET(_mnemonicless "${CMAKE_CURRENT_BINARY_DIR}/${_lang}/${_potBasename}.nomnemonic.po")
+			SET(_compileCommand
+				COMMAND sed -e "\"s/[(]&[A-Za-z][)]//g\"" "${_absFile}" > "${_mnemonicless}"
+				COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} -o ${_moFile} ${_mnemonicless}
+				BYPRODUCTS ${_mnemonicless}
+			)
+		ELSE (APPLE)
+			SET(_compileCommand
+				COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} -o ${_moFile} ${_absFile}
+			)
+		ENDIF (APPLE)
 
-    SET(_addToAll)
-    IF(${_firstPoFile} STREQUAL "ALL")
-        SET(_addToAll "ALL")
-        SET(_firstPoFile)
-    ENDIF(${_firstPoFile} STREQUAL "ALL")
+		IF (_currentPoFile MATCHES "\\.git")
+			continue()
+		ENDIF (_currentPoFile MATCHES "\\.git")
 
-    FOREACH (_currentPoFile ${_firstPoFile} ${ARGN})
-        GET_FILENAME_COMPONENT(_absFile ${_currentPoFile} ABSOLUTE)
-        GET_FILENAME_COMPONENT(_abs_PATH ${_absFile} PATH)
-        GET_FILENAME_COMPONENT(_gmoBase ${_absFile} NAME_WE)
-        GET_FILENAME_COMPONENT(_lang ${_abs_PATH} NAME_WE)
-        SET(_gmoFile ${CMAKE_BINARY_DIR}/${_lang}__${_gmoBase}.gmo)
+		IF (CMAKE_BUILD_PO)
+			ADD_CUSTOM_COMMAND(OUTPUT ${_moFile}
+				COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/${_lang}
+				COMMAND ${GETTEXT_MSGMERGE_EXECUTABLE} --quiet --update --backup=none -s ${_absFile} ${_absPotFile}
+				${_compileCommand}
+				DEPENDS ${_absPotFile} ${_absFile}
+			)
+		ELSE (CMAKE_BUILD_PO)
+			ADD_CUSTOM_COMMAND(OUTPUT ${_moFile}
+				COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/${_lang}
+				${_compileCommand}
+				DEPENDS ${_absFile}
+			)
+		ENDIF (CMAKE_BUILD_PO)
 
-        IF (_currentPoFile MATCHES "\\.git")
-            continue()
-        ENDIF (_currentPoFile MATCHES "\\.git")
+		IF(APPLE)
+			target_sources(PCSX2 PRIVATE ${_moFile})
+			set_source_files_properties(${_moFile} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/locale/${_lang})
+			source_group(Resources/locale/${__lang} FILES ${_moFile})
+		ELSEIF(PACKAGE_MODE)
+			INSTALL(FILES ${_moFile} DESTINATION ${CMAKE_INSTALL_DATADIR}/PCSX2/resources/locale/${_lang})
+		ELSE()
+			INSTALL(FILES ${_moFile} DESTINATION ${CMAKE_SOURCE_DIR}/bin/resources/locale/${_lang})
+		ENDIF()
 
-        IF (CMAKE_BUILD_PO)
-            ADD_CUSTOM_COMMAND( OUTPUT ${_gmoFile}
-                COMMAND ${GETTEXT_MSGMERGE_EXECUTABLE} --quiet --update --backup=none -s ${_absFile} ${_absPotFile}
-                COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} -o ${_gmoFile} ${_absFile}
-                DEPENDS ${_absPotFile} ${_absFile} )
-        ELSE (CMAKE_BUILD_PO)
-            ADD_CUSTOM_COMMAND( OUTPUT ${_gmoFile}
-                COMMAND ${GETTEXT_MSGFMT_EXECUTABLE} -o ${_gmoFile} ${_absFile}
-                DEPENDS ${_absPotFile} ${_absFile} )
-        ENDIF (CMAKE_BUILD_PO)
+		LIST(APPEND _moFiles ${_moFile})
 
-        IF (PACKAGE_MODE)
-            INSTALL(FILES ${_gmoFile} DESTINATION share/locale/${_lang}/LC_MESSAGES RENAME ${_potBasename}.mo)
-        ELSE (PACKAGE_MODE)
-            INSTALL(FILES ${_gmoFile} DESTINATION ${CMAKE_SOURCE_DIR}/bin/Langs/${_lang} RENAME ${_potBasename}.mo)
-        ENDIF (PACKAGE_MODE)
+	ENDFOREACH (_currentPoFile)
 
-        SET(_gmoFiles ${_gmoFiles} ${_gmoFile})
+	IF(NOT LINUX_PACKAGE AND NOT APPLE)
+		ADD_CUSTOM_TARGET(translations_${_potBasename} ALL DEPENDS ${_moFiles})
+	ENDIF(NOT LINUX_PACKAGE AND NOT APPLE)
 
-    ENDFOREACH (_currentPoFile )
-
-    IF(NOT LINUX_PACKAGE)
-        ADD_CUSTOM_TARGET(translations_${_potBasename} ${_addToAll} DEPENDS ${_gmoFiles})
-    ENDIF(NOT LINUX_PACKAGE)
-
-ENDMACRO(GETTEXT_CREATE_TRANSLATIONS_PCSX2 )
+ENDFUNCTION(GETTEXT_CREATE_TRANSLATIONS_PCSX2)

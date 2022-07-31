@@ -14,31 +14,48 @@
  */
 
 #pragma once
+#include <string>
 
-namespace Exception
+const u32 ThreadListInstructions[3] =
 {
-	class BiosLoadFailed : public BadStream
-	{
-		DEFINE_EXCEPTION_COPYTORS( BiosLoadFailed, FileNotFound )
-		DEFINE_EXCEPTION_MESSAGES( BiosLoadFailed )
-		DEFINE_STREAM_EXCEPTION_ACCESSORS( BiosLoadFailed )
-
-	public:
-		BiosLoadFailed( const wxString& streamName );
-	};
-}
+	0xac420000, // sw v0,0x0(v0)
+	0x00000000, // no-op
+	0x00000000, // no-op
+};
 
 struct BiosDebugInformation
 {
-	u32 biosVersion;
-	u32 biosChecksum;
 	u32 threadListAddr;
 };
 
-extern u32 BiosVersion;		//  Used by CDVD
-extern u32 BiosChecksum;
-extern wxString BiosDescription;
+// The following two arrays are used for Qt
+[[maybe_unused]] static const char* BiosZoneStrings[] {
+	"T10K",
+	"Test",
+	"Japan",
+	"USA",
+	"Europe",
+	"HK",
+	"Free",
+	"China",
+	nullptr
+};
 
-extern void LoadBIOS(void);
-extern bool IsBIOS(const wxString& filename, wxString& description);
-extern bool IsBIOSlite(const wxString& filename, wxString& description);
+[[maybe_unused]] static const char* BiosZoneBytes[]
+{
+	"T", "X", "J", "A", "E", "H", "P", "C", nullptr
+};
+
+extern BiosDebugInformation CurrentBiosInformation;
+extern u32 BiosVersion;		// Used by CDVD
+extern u32 BiosRegion;		// Used by CDVD
+extern bool NoOSD;			// Used for HLE OSD Config Params
+extern bool AllowParams1;
+extern bool AllowParams2;
+extern u32 BiosChecksum;
+extern std::string BiosDescription;
+extern std::string BiosZone;
+extern std::string BiosPath;
+extern bool LoadBIOS();
+extern bool IsBIOS(const char* filename, u32& version, std::string& description, u32& region, std::string& zone);
+extern bool IsBIOSAvailable(const std::string& full_path);

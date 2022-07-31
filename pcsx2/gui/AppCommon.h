@@ -15,9 +15,20 @@
 
 #pragma once
 
-#include "Utilities/SafeArray.h"
-#include "Utilities/EventSource.h"
-#include "Utilities/PersistentThread.h"
+#include "common/SafeArray.h"
+#include "common/EventSource.h"
+
+#include "gui/wxGuiTools.h"
+#include "gui/PersistentThread.h"
+#include "gui/pxRadioPanel.h"
+#include "gui/pxCheckBox.h"
+#include "gui/pxStaticText.h"
+#include "gui/CheckedStaticBox.h"
+
 #include "AppForwardDefs.h"
 #include "AppConfig.h"
 #include "AppEventListeners.h"
+
+extern wxString AddAppName( const wxString& fmt );
+extern wxString AddAppName( const wxChar* fmt );
+extern wxString AddAppName( const char* fmt );

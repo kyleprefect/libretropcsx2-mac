@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "common/StringUtil.h"
+
 // Useful enums for some of the fields.
 enum pce_values
 {
@@ -95,6 +97,24 @@ union tDMA_TAG {
 	tDMA_TAG() {}
 
 	tDMA_TAG(u32 val) { _u32 = val; }
+	u16 upper() const { return (_u32 >> 16); }
+	u16 lower() const { return (u16)_u32; }
+	std::string tag_to_str() const
+	{
+		switch(ID)
+		{
+			case TAG_REFE: return StringUtil::StdStringFromFormat("REFE %08X", _u32);
+			case TAG_CNT: return "CNT";
+			case TAG_NEXT: return StringUtil::StdStringFromFormat("NEXT %08X", _u32);
+			case TAG_REF: return StringUtil::StdStringFromFormat("REF %08X", _u32);
+			case TAG_REFS: return StringUtil::StdStringFromFormat("REFS %08X", _u32);
+			case TAG_CALL: return "CALL";
+			case TAG_RET: return "RET";
+			case TAG_END: return "END";
+			default: return "????";
+		}
+	}
+	void reset() { _u32 = 0; }
 };
 #define DMA_TAG(value) ((tDMA_TAG)(value))
 
@@ -114,7 +134,14 @@ union tDMA_CHCR {
 
 	tDMA_CHCR( u32 val) { _u32 = val; }
 
+	bool test(u32 flags) const { return !!(_u32 & flags); }
 	void set(u32 value) { _u32 = value; }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	u16 upper() const { return (_u32 >> 16); }
+	u16 lower() const { return (u16)_u32; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Chcr: 0x%x", _u32); }
 	tDMA_TAG tag() { return (tDMA_TAG)_u32; }
 };
 
@@ -129,6 +156,8 @@ union tDMA_SADR {
 
 	tDMA_SADR(u32 val) { _u32 = val; }
 
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Sadr: 0x%x", _u32); }
 	tDMA_TAG tag() const { return (tDMA_TAG)_u32; }
 };
 
@@ -140,6 +169,8 @@ union tDMA_QWC {
 
 	tDMA_QWC(u32 val) { _u32 = val; }
 
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("QWC: 0x%04x", QWC); }
 	tDMA_TAG tag() const { return (tDMA_TAG)_u32; }
 };
 
@@ -160,7 +191,7 @@ struct DMACh {
 
 	void chcrTransfer(tDMA_TAG* ptag)
 	{
-	    chcr.TAG = ptag[0]._u32 >> 16;
+	    chcr.TAG = ptag[0].upper();
 	}
 
 	void qwcTransfer(tDMA_TAG* ptag)
@@ -172,6 +203,10 @@ struct DMACh {
 	void unsafeTransfer(tDMA_TAG* ptag);
 	tDMA_TAG *getAddr(u32 addr, u32 num, bool write);
 	tDMA_TAG *DMAtransfer(u32 addr, u32 num);
+	tDMA_TAG dma_tag();
+
+	std::string cmq_to_str() const;
+	std::string cmqt_to_str() const;
 };
 
 enum INTCIrqs
@@ -233,13 +268,35 @@ union tDMAC_QUEUE
 	    u16 SIF1 : 1;
 	    u16 SIF2 : 1;
 	    u16 SPR0 : 1;
-	    u16 SPR1 : 1;
+        u16 SPR1 : 1;
 	    u16 SIS  : 1;
 	    u16 MEIS : 1;
 	    u16 BEIS : 1;
 	};
 	u16 _u16;
+
+	tDMAC_QUEUE(u16 val) { _u16 = val; }
+	void reset() { _u16 = 0; }
+	bool empty() const { return (_u16 == 0); }
 };
+
+static __fi const char* ChcrName(u32 addr)
+{
+    switch (addr)
+    {
+        case D0_CHCR: return "Vif 0";
+        case D1_CHCR: return "Vif 1";
+        case D2_CHCR: return "GIF";
+        case D3_CHCR: return "Ipu 0";
+        case D4_CHCR: return "Ipu 1";
+        case D5_CHCR: return "Sif 0";
+        case D6_CHCR: return "Sif 1";
+        case D7_CHCR: return "Sif 2";
+        case D8_CHCR: return "SPR 0";
+        case D9_CHCR: return "SPR 1";
+        default: return "???";
+    }
+}
 
 // Believe it or not, making this const can generate compiler warnings in gcc.
 static __fi int ChannelNumber(u32 addr)
@@ -257,9 +314,11 @@ static __fi int ChannelNumber(u32 addr)
         case D8_CHCR: return 8;
         case D9_CHCR: return 9;
 		default:
-		      break;
+		{
+			pxFailDev("Invalid DMA channel number");
+			return 51; // some value
+		}
     }
-    return 51; // some value
 }
 
 union tDMAC_CTRL {
@@ -275,6 +334,12 @@ union tDMAC_CTRL {
 	u32 _u32;
 
 	tDMAC_CTRL(u32 val) { _u32 = val; }
+
+	bool test(u32 flags) const { return !!(_u32 & flags); }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Ctrl: 0x%x", _u32); }
 };
 
 union tDMAC_STAT {
@@ -294,6 +359,17 @@ union tDMAC_STAT {
 	u16 _u16[2];
 
 	tDMAC_STAT(u32 val) { _u32 = val; }
+
+	bool test(u32 flags) const { return !!(_u32 & flags); }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Stat: 0x%x", _u32); }
+
+	bool TestForInterrupt() const
+	{
+		return ((_u16[0] & _u16[1]) != 0) || BEIS;
+	}
 };
 
 union tDMAC_PCR {
@@ -307,6 +383,12 @@ union tDMAC_PCR {
 	u32 _u32;
 
 	tDMAC_PCR(u32 val) { _u32 = val; }
+
+	bool test(u32 flags) const { return !!(_u32 & flags); }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Pcr: 0x%x", _u32); }
 };
 
 union tDMAC_SQWC {
@@ -319,6 +401,12 @@ union tDMAC_SQWC {
 	u32 _u32;
 
 	tDMAC_SQWC(u32 val) { _u32 = val; }
+
+	bool test(u32 flags) const { return !!(_u32 & flags); }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Sqwc: 0x%x", _u32); }
 };
 
 union tDMAC_RBSR {
@@ -329,6 +417,9 @@ union tDMAC_RBSR {
 	u32 _u32;
 
 	tDMAC_RBSR(u32 val) { _u32 = val; }
+
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Rbsr: 0x%x", _u32); }
 };
 
 union tDMAC_RBOR {
@@ -339,6 +430,9 @@ union tDMAC_RBOR {
 	u32 _u32;
 
 	tDMAC_RBOR(u32 val) { _u32 = val; }
+
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Rbor: 0x%x", _u32); }
 };
 
 // --------------------------------------------------------------------------------------
@@ -358,6 +452,25 @@ union tDMAC_ADDR
 
 	tDMAC_ADDR() {}
 	tDMAC_ADDR(u32 val) { _u32 = val; }
+
+	void clear() { _u32 = 0; }
+
+	void AssignADDR(uint addr)
+	{
+		ADDR = addr;
+		if (SPR) ADDR &= (Ps2MemSize::Scratch-1);
+	}
+
+	void IncrementQWC(uint incval = 1)
+	{
+		ADDR += incval;
+		if (SPR) ADDR &= (Ps2MemSize::Scratch-1);
+	}
+
+	std::string ToString(bool sprIsValid=true) const
+	{
+		return StringUtil::StdStringFromFormat((sprIsValid && SPR) ? "0x%04X(SPR)" : "0x%08X", ADDR);
+	}
 };
 
 struct DMACregisters
@@ -388,6 +501,12 @@ union tINTC_STAT {
 	u32 _u32;
 
 	tINTC_STAT(u32 val) { _u32 = val; }
+
+	bool test(u32 flags) const { return !!(_u32 & flags); }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Stat: 0x%x", _u32); }
 };
 
 union tINTC_MASK {
@@ -398,6 +517,12 @@ union tINTC_MASK {
 	u32 _u32;
 
 	tINTC_MASK(u32 val) { _u32 = val; }
+
+	bool test(u32 flags) const { return !!(_u32 & flags); }
+	void set_flags(u32 flags) { _u32 |= flags; }
+	void clear_flags(u32 flags) { _u32 &= ~flags; }
+	void reset() { _u32 = 0; }
+	std::string desc() const { return StringUtil::StdStringFromFormat("Mask: 0x%x", _u32); }
 };
 
 struct INTCregisters
@@ -424,6 +549,8 @@ static DMACh& sif0ch	= (DMACh&)eeHw[0xc000];
 static DMACh& sif1ch	= (DMACh&)eeHw[0xc400];
 static DMACh& sif2dma	= (DMACh&)eeHw[0xc800];
 
+extern void throwBusError(const char *s);
+extern void setDmacStat(u32 num);
 extern tDMA_TAG *SPRdmaGetAddr(u32 addr, bool write);
 extern tDMA_TAG *dmaGetAddr(u32 addr, bool write);
 

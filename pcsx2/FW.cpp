@@ -14,52 +14,50 @@
  */
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
+#include "IopDma.h"
+#include "R3000A.h"
 #include <stdlib.h>
 #include <string>
+using namespace std;
 
 #include "FW.h"
 
-// Our main memory storage, and defines for accessing it.
-#define fwRu32(mem) (*(u32*)&fwregs[(mem)&0xffff])
-
-//PHY Access Address for ease of use :P
-#define PHYACC fwRu32(0x8414)
-
 u8 phyregs[16];
-static s8* fwregs = NULL;
+s8* fwregs;
 
-s32 FWopen(void)
+s32 FWopen()
 {
 	memset(phyregs, 0, sizeof(phyregs));
 	// Initializing our registers.
 	fwregs = (s8*)calloc(0x10000, 1);
-	if (!fwregs)
+	if (fwregs == NULL)
+	{
+		DevCon.WriteLn("FW: Error allocating Memory");
 		return -1;
+	}
 	return 0;
 }
 
-void FWclose(void)
+void FWclose()
 {
 	// Freeing the registers.
-	if (fwregs)
-		free(fwregs);
+	free(fwregs);
 	fwregs = NULL;
 }
 
-void PHYWrite(void)
+void PHYWrite()
 {
-	u8 reg        = (PHYACC >> 8) & 0xf;
-	u8 data       = PHYACC & 0xff;
+	u8 reg = (PHYACC >> 8) & 0xf;
+	u8 data = PHYACC & 0xff;
 
-	phyregs[reg]  = data;
+	phyregs[reg] = data;
 
-	PHYACC       &= ~0x4000ffff;
+	PHYACC &= ~0x4000ffff;
 }
 
-void PHYRead(void)
+void PHYRead()
 {
-	u8 reg  = (PHYACC >> 24) & 0xf;
+	u8 reg = (PHYACC >> 24) & 0xf;
 
 	PHYACC &= ~0x80000000;
 
@@ -74,25 +72,39 @@ void PHYRead(void)
 
 u32 FWread32(u32 addr)
 {
+	u32 ret = 0;
+
 	switch (addr)
 	{
 		//Node ID Register the top part is default, bottom part i got from my ps2
 		case 0x1f808400:
-			return /*(0x3ff << 22) | 1;*/ 0xffc00001;
+			ret = /*(0x3ff << 22) | 1;*/ 0xffc00001;
+			break;
+		// Control Register 2
+		case 0x1f808410:
+			ret = fwRu32(addr); //SCLK OK (Needs to be set when FW is "Ready"
+			break;
+		//Interrupt 0 Register
+		case 0x1f808420:
+			ret = fwRu32(addr);
+			break;
+
 		//Dunno what this is, but my home console always returns this value 0x10000001
 		//Seems to be related to the Node ID however (does some sort of compare/check)
 		case 0x1f80847c:
-			return 0x10000001;
+			ret = 0x10000001;
+			break;
 
-		case 0x1f808410: // Control Register 2 - SCLK OK (Needs to be set when FW is "Ready"
-		case 0x1f808420: // Interrupt 0 Register
 		// Include other relevant 32 bit addresses we need to catch here.
 		default:
 			// By default, read fwregs.
+			ret = fwRu32(addr);
 			break;
 	}
 
-	return fwRu32(addr);
+	DevCon.WriteLn("FW: read mem 0x%x: 0x%x", addr, ret);
+
+	return ret;
 }
 
 void FWwrite32(u32 addr, u32 value)
@@ -115,9 +127,13 @@ void FWwrite32(u32 addr, u32 value)
 			//Im presuming we send that back to pcsx2 then. This register stores the result, plus whatever was written (minus the read/write flag
 			fwRu32(addr) = value;   //R/W Bit cleaned in underneath function
 			if (value & 0x40000000) //Writing to PHY
+			{
 				PHYWrite();
+			}
 			else if (value & 0x80000000) //Reading from PHY
+			{
 				PHYRead();
+			}
 			break;
 
 		//Control Register 0
@@ -161,13 +177,20 @@ void FWwrite32(u32 addr, u32 value)
 		//Interrupt 2 Register Mask
 		case 0x1f808434:
 			//These are direct writes (as it's a mask!)
+			fwRu32(addr) = value;
+			break;
 		//DMA Control and Status Register 0
 		case 0x1f8084B8:
+			fwRu32(addr) = value;
+			break;
 		//DMA Control and Status Register 1
 		case 0x1f808538:
+			fwRu32(addr) = value;
+			break;
 		default:
 			// By default, just write it to fwregs.
 			fwRu32(addr) = value;
 			break;
 	}
+	DevCon.WriteLn("FW: write mem 0x%x: 0x%x", addr, value);
 }

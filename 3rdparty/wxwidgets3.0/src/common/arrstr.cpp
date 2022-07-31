@@ -15,6 +15,10 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #include "wx/arrstr.h"
 #include "wx/scopedarray.h"
 
@@ -29,24 +33,32 @@
 
 wxArrayString::wxArrayString(size_t sz, const char** a)
 {
+#if !wxUSE_STD_CONTAINERS
     Init(false);
+#endif
     for (size_t i=0; i < sz; i++)
         Add(a[i]);
 }
 
 wxArrayString::wxArrayString(size_t sz, const wchar_t** a)
 {
+#if !wxUSE_STD_CONTAINERS
     Init(false);
+#endif
     for (size_t i=0; i < sz; i++)
         Add(a[i]);
 }
 
 wxArrayString::wxArrayString(size_t sz, const wxString* a)
 {
+#if !wxUSE_STD_CONTAINERS
     Init(false);
+#endif
     for (size_t i=0; i < sz; i++)
         Add(a[i]);
 }
+
+#if !wxUSE_STD_CONTAINERS
 
 // size increment = min(50% of current size, ARRAY_MAXSIZE_INCREMENT)
 #define   ARRAY_MAXSIZE_INCREMENT       4096
@@ -210,6 +222,9 @@ int wxArrayString::Index(const wxString& str, bool bCase, bool bFromEnd) const
 {
   if ( m_autoSort ) {
     // use binary search in the sorted array
+    wxASSERT_MSG( bCase && !bFromEnd,
+                  wxT("search parameters ignored for auto sorted array") );
+
     size_t i,
            lo = 0,
            hi = m_nCount;
@@ -274,6 +289,8 @@ size_t wxArrayString::Add(const wxString& str, size_t nInsert)
       }
     }
 
+    wxASSERT_MSG( lo == hi, wxT("binary search broken") );
+
     Insert(str, lo, nInsert);
 
     return (size_t)lo;
@@ -298,6 +315,10 @@ size_t wxArrayString::Add(const wxString& str, size_t nInsert)
 // add item at the given position
 void wxArrayString::Insert(const wxString& str, size_t nIndex, size_t nInsert)
 {
+  wxCHECK_RET( nIndex <= m_nCount, wxT("bad index in wxArrayString::Insert") );
+  wxCHECK_RET( m_nCount <= m_nCount + nInsert,
+               wxT("array size overflow in wxArrayString::Insert") );
+
   wxScopedArray<wxString> oldStrings(Grow(nInsert));
 
   for (int j = m_nCount - nIndex - 1; j >= 0; j--)
@@ -355,6 +376,10 @@ void wxArrayString::SetCount(size_t count)
 // removes item from array (by index)
 void wxArrayString::RemoveAt(size_t nIndex, size_t nRemove)
 {
+  wxCHECK_RET( nIndex < m_nCount, wxT("bad index in wxArrayString::Remove") );
+  wxCHECK_RET( nIndex + nRemove <= m_nCount,
+               wxT("removing too many elements in wxArrayString::Remove") );
+
   for ( size_t j =  0; j < m_nCount - nIndex -nRemove; j++)
       m_pItems[nIndex + j] = m_pItems[nIndex + nRemove + j];
 
@@ -365,6 +390,10 @@ void wxArrayString::RemoveAt(size_t nIndex, size_t nRemove)
 void wxArrayString::Remove(const wxString& sz)
 {
   int iIndex = Index(sz);
+
+  wxCHECK_RET( iIndex != wxNOT_FOUND,
+               wxT("removing inexistent element in wxArrayString::Remove") );
+
   RemoveAt(iIndex);
 }
 
@@ -393,6 +422,8 @@ struct wxSortPredicateAdaptor
 
 void wxArrayString::Sort(CompareFunction compareFunction)
 {
+    wxCHECK_RET( !m_autoSort, wxT("can't use this method with sorted arrays") );
+
     std::sort(m_pItems, m_pItems + m_nCount,
                 wxSortPredicateAdaptor(compareFunction));
 }
@@ -439,4 +470,107 @@ bool wxArrayString::operator==(const wxArrayString& a) const
     }
 
     return true;
+}
+
+#endif // !wxUSE_STD_CONTAINERS
+
+// ===========================================================================
+// wxJoin and wxSplit
+// ===========================================================================
+
+#include "wx/tokenzr.h"
+
+wxString wxJoin(const wxArrayString& arr, const wxChar sep, const wxChar escape)
+{
+    size_t count = arr.size();
+    if ( count == 0 )
+        return wxEmptyString;
+
+    wxString str;
+
+    // pre-allocate memory using the estimation of the average length of the
+    // strings in the given array: this is very imprecise, of course, but
+    // better than nothing
+    str.reserve(count*(arr[0].length() + arr[count-1].length()) / 2);
+
+    if ( escape == wxT('\0') )
+    {
+        // escaping is disabled:
+        for ( size_t i = 0; i < count; i++ )
+        {
+            if ( i )
+                str += sep;
+            str += arr[i];
+        }
+    }
+    else // use escape character
+    {
+        for ( size_t n = 0; n < count; n++ )
+        {
+            if ( n )
+                str += sep;
+
+            for ( wxString::const_iterator i = arr[n].begin(),
+                                         end = arr[n].end();
+                  i != end;
+                  ++i )
+            {
+                const wxChar ch = *i;
+                if ( ch == sep )
+                    str += escape;      // escape this separator
+                str += ch;
+            }
+        }
+    }
+
+    str.Shrink(); // release extra memory if we allocated too much
+    return str;
+}
+
+wxArrayString wxSplit(const wxString& str, const wxChar sep, const wxChar escape)
+{
+    if ( escape == wxT('\0') )
+    {
+        // simple case: we don't need to honour the escape character
+        return wxStringTokenize(str, sep, wxTOKEN_RET_EMPTY_ALL);
+    }
+
+    wxArrayString ret;
+    wxString curr;
+    wxChar prev = wxT('\0');
+
+    for ( wxString::const_iterator i = str.begin(),
+                                 end = str.end();
+          i != end;
+          ++i )
+    {
+        const wxChar ch = *i;
+
+        if ( ch == sep )
+        {
+            if ( prev == escape )
+            {
+                // remove the escape character and don't consider this
+                // occurrence of 'sep' as a real separator
+                *curr.rbegin() = sep;
+            }
+            else // real separator
+            {
+                ret.push_back(curr);
+                curr.clear();
+            }
+        }
+        else // normal character
+        {
+            curr += ch;
+        }
+
+        prev = ch;
+    }
+
+    // add the last token
+    if ( !curr.empty() || prev == sep )
+        ret.Add(curr);
+
+    return ret;
 }

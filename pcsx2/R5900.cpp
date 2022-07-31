@@ -17,6 +17,8 @@
 #include "PrecompiledHeader.h"
 #include "Common.h"
 
+#include "common/StringUtil.h"
+#include "ps2/BiosTools.h"
 #include "R5900.h"
 #include "R3000A.h"
 #include "ps2/pgif.h" // pgif init
@@ -24,7 +26,11 @@
 #include "COP0.h"
 #include "MTVU.h"
 
-#include "System/SysThreads.h"
+#ifndef PCSX2_CORE
+#include "gui/SysThreads.h"
+#else
+#include "VMManager.h"
+#endif
 #include "R5900Exceptions.h"
 
 #include "Hardware.h"
@@ -32,17 +38,23 @@
 
 #include "Elfheader.h"
 #include "CDVD/CDVD.h"
+#include "USB/USB.h"
 #include "Patch.h"
 #include "GameDatabase.h"
 
+#include "DebugTools/Breakpoints.h"
+#include "DebugTools/MIPSAnalyst.h"
+#include "DebugTools/SymbolMap.h"
 #include "R5900OpcodeTables.h"
+
+using namespace R5900;	// for R5900 disasm tools
 
 s32 EEsCycle;		// used to sync the IOP to the EE
 u32 EEoCycle;
 
-__aligned16 cpuRegisters cpuRegs;
-__aligned16 fpuRegisters fpuRegs;
-__aligned16 tlbs tlb[48];
+alignas(16) cpuRegisters cpuRegs;
+alignas(16) fpuRegisters fpuRegs;
+alignas(16) tlbs tlb[48];
 R5900cpu *Cpu = NULL;
 
 bool g_SkipBiosHack; // set at boot if the skip bios hack is on, reset before the game has started
@@ -62,10 +74,11 @@ meaning that only the first 13 game arguments supplied by the user can be added 
 In fast boot mode, 15 arguments can fit because the only call to EELOAD is "<ELF> <<args>>". */
 const int kMaxArgs = 16;
 uptr g_argPtrs[kMaxArgs];
+#define DEBUG_LAUNCHARG 0 // show lots of helpful console messages as the launch arguments are passed to the game
 
-extern SysMainMemory& GetVmMemory(void);
+extern SysMainMemory& GetVmMemory();
 
-void cpuReset(void)
+void cpuReset()
 {
 	vu1Thread.WaitVU();
 	if (GetMTGS().IsOpen())
@@ -90,29 +103,29 @@ void cpuReset(void)
 
 	psxReset();
 	pgifInit();
+
 	hwReset();
 
 	extern void Deci2Reset();		// lazy, no good header for it yet.
 	Deci2Reset();
 
-	g_GameStarted = false;
-	g_GameLoading = false;
 	g_SkipBiosHack = EmuConfig.UseBOOT2Injection;
+	AllowParams1 = !g_SkipBiosHack;
+	AllowParams2 = !g_SkipBiosHack;
 
 	ElfCRC = 0;
-	DiscSerial = L"";
+	DiscSerial.clear();
 	ElfEntry = -1;
 
 	// Probably not the right place, but it has to be done when the ram is actually initialized
-	if(USBsetRAM != 0)
-		USBsetRAM(iopMem->Main);
+	USBsetRAM(iopMem->Main);
 
 	// FIXME: LastELF should be reset on media changes as well as on CPU resets, in
 	// the very unlikely case that a user swaps to another media source that "looks"
 	// the same (identical ELF names) but is actually different (devs actually could
 	// run into this while testing minor binary hacked changes to ISO images, which
 	// is why I found out about this) --air
-	LastELF = L"";
+	LastELF.clear();
 
 	g_eeloadMain = 0, g_eeloadExec = 0, g_osdsys_str = 0;
 }
@@ -122,13 +135,13 @@ __ri void cpuException(u32 code, u32 bd)
 	bool errLevel2, checkStatus;
 	u32 offset = 0;
 
-	cpuRegs.branch = 0;		// Tells the interpreter that an exception occurred during a branch.
+    cpuRegs.branch = 0;		// Tells the interpreter that an exception occurred during a branch.
 	cpuRegs.CP0.n.Cause = code & 0xffff;
 
 	if(cpuRegs.CP0.n.Status.b.ERL == 0)
 	{
 		//Error Level 0-1
-		errLevel2 = FALSE;
+		errLevel2 = false;
 		checkStatus = (cpuRegs.CP0.n.Status.b.BEV == 0); //  for TLB/general exceptions
 
 		if (((code & 0x7C) >= 0x8) && ((code & 0x7C) <= 0xC))
@@ -141,19 +154,24 @@ __ri void cpuException(u32 code, u32 bd)
 	else
 	{
 		//Error Level 2
-		errLevel2 = TRUE;
+		errLevel2 = true;
 		checkStatus = (cpuRegs.CP0.n.Status.b.DEV == 0); // for perf/debug exceptions
 
+		Console.Error("*PCSX2* FIX ME: Level 2 cpuException");
 		if ((code & 0x38000) <= 0x8000 )
 		{
 			//Reset / NMI
 			cpuRegs.pc = 0xBFC00000;
+			Console.Warning("Reset request");
+			cpuUpdateOperationMode();
 			return;
 		}
 		else if((code & 0x38000) == 0x10000)
 			offset = 0x80; //Performance Counter
 		else if((code & 0x38000) == 0x18000)
 			offset = 0x100; //Debug
+		else
+			Console.Error("Unknown Level 2 Exception!! Cause %x", code);
 	}
 
 	if (cpuRegs.CP0.n.Status.b.EXL == 0)
@@ -161,7 +179,8 @@ __ri void cpuException(u32 code, u32 bd)
 		cpuRegs.CP0.n.Status.b.EXL = 1;
 		if (bd)
 		{
-			cpuRegs.CP0.n.EPC    = cpuRegs.pc - 4;
+			Console.Warning("branch delay!!");
+			cpuRegs.CP0.n.EPC = cpuRegs.pc - 4;
 			cpuRegs.CP0.n.Cause |= 0x80000000;
 		}
 		else
@@ -171,16 +190,27 @@ __ri void cpuException(u32 code, u32 bd)
 		}
 	}
 	else
+	{
 		offset = 0x180; //Override the cause
+		if (errLevel2) Console.Warning("cpuException: Status.EXL = 1 cause %x", code);
+	}
 
 	if (checkStatus)
 		cpuRegs.pc = 0x80000000 + offset;
 	else
 		cpuRegs.pc = 0xBFC00200 + offset;
+
+	cpuUpdateOperationMode();
 }
 
 void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
 {
+	// Avoid too much spamming on the interpreter
+	if (Cpu != &intCpu || IsDebugBuild) {
+		Console.Error("cpuTlbMiss pc:%x, cycl:%x, addr: %x, status=%x, code=%x",
+				cpuRegs.pc, cpuRegs.cycle, addr, cpuRegs.CP0.n.Status.val, excode);
+	}
+
 	cpuRegs.CP0.n.BadVAddr = addr;
 	cpuRegs.CP0.n.Context &= 0xFF80000F;
 	cpuRegs.CP0.n.Context |= (addr >> 9) & 0x007FFFF0;
@@ -205,7 +235,9 @@ __fi void cpuSetNextEvent( u32 startCycle, s32 delta )
 	// if startCycle is greater than our next branch cycle.
 
 	if( (int)(g_nextEventCycle - startCycle) > delta )
+	{
 		g_nextEventCycle = startCycle + delta;
+	}
 }
 
 // sets a branch to occur some time from the current cycle
@@ -225,17 +257,18 @@ __fi int cpuTestCycle( u32 startCycle, s32 delta )
 }
 
 // tells the EE to run the branch test the next time it gets a chance.
-__fi void cpuSetEvent(void)
+__fi void cpuSetEvent()
 {
 	g_nextEventCycle = cpuRegs.cycle;
 }
 
 __fi void cpuClearInt( uint i )
 {
+	pxAssume( i < 32 );
 	cpuRegs.interrupt &= ~(1 << i);
 }
 
-static __fi void TESTINT( u8 n, void (*callback)(void) )
+static __fi void TESTINT( u8 n, void (*callback)() )
 {
 	if( !(cpuRegs.interrupt & (1 << n)) ) return;
 
@@ -250,30 +283,33 @@ static __fi void TESTINT( u8 n, void (*callback)(void) )
 
 // [TODO] move this function to Dmac.cpp, and remove most of the DMAC-related headers from
 // being included into R5900.cpp.
-static __fi void _cpuTestInterrupts(void)
+static __fi void _cpuTestInterrupts()
 {
 	if (!dmacRegs.ctrl.DMAE || (psHu8(DMAC_ENABLER+2) & 1))
+	{
+		//Console.Write("DMAC Disabled or suspended");
 		return;
+	}
 	/* These are 'pcsx2 interrupts', they handle asynchronous stuff
 	   that depends on the cycle timings */
 
-	TESTINT(DMAC_VIF1,		vif1Interrupt);	
+	TESTINT(DMAC_VIF1,		vif1Interrupt);
 	TESTINT(DMAC_GIF,		gifInterrupt);
 	TESTINT(DMAC_SIF0,		EEsif0Interrupt);
 	TESTINT(DMAC_SIF1,		EEsif1Interrupt);
-	
 	// Profile-guided Optimization (sorta)
 	// The following ints are rarely called.  Encasing them in a conditional
 	// as follows helps speed up most games.
 
 	if (cpuRegs.interrupt & ((1 << DMAC_VIF0) | (1 << DMAC_FROM_IPU) | (1 << DMAC_TO_IPU)
 		| (1 << DMAC_FROM_SPR) | (1 << DMAC_TO_SPR) | (1 << DMAC_MFIFO_VIF) | (1 << DMAC_MFIFO_GIF)
-		| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH)))
+		| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH) | (1 << IPU_PROCESS)))
 	{
 		TESTINT(DMAC_VIF0,		vif0Interrupt);
 
 		TESTINT(DMAC_FROM_IPU,	ipu0Interrupt);
 		TESTINT(DMAC_TO_IPU,	ipu1Interrupt);
+		TESTINT(IPU_PROCESS,	ipuCMDProcess);
 
 		TESTINT(DMAC_FROM_SPR,	SPRFROMinterrupt);
 		TESTINT(DMAC_TO_SPR,	SPRTOinterrupt);
@@ -286,7 +322,7 @@ static __fi void _cpuTestInterrupts(void)
 	}
 }
 
-static __fi void _cpuTestTIMR(void)
+static __fi void _cpuTestTIMR()
 {
 	cpuRegs.CP0.n.Count += cpuRegs.cycle-s_iLastCOP0Cycle;
 	s_iLastCOP0Cycle = cpuRegs.cycle;
@@ -298,7 +334,20 @@ static __fi void _cpuTestTIMR(void)
 
 	if ( (cpuRegs.CP0.n.Status.val & 0x8000) &&
 		cpuRegs.CP0.n.Count >= cpuRegs.CP0.n.Compare && cpuRegs.CP0.n.Count < cpuRegs.CP0.n.Compare+1000 )
+	{
+		Console.WriteLn( Color_Magenta, "timr intr: %x, %x", cpuRegs.CP0.n.Count, cpuRegs.CP0.n.Compare);
 		cpuException(0x808000, cpuRegs.branch);
+	}
+}
+
+static __fi void _cpuTestPERF()
+{
+	// Perfs are updated when read by games (COP0's MFC0/MTC0 instructions), so we need
+	// only update them at semi-regular intervals to keep cpuRegs.cycle from wrapping
+	// around twice on us btween updates.  Hence this function is called from the cpu's
+	// Counters update.
+
+	COP0_UpdatePCCR();
 }
 
 // Checks the COP0.Status for exception enablings.
@@ -319,7 +368,7 @@ u32 g_nextEventCycle = 0;
 
 // Shared portion of the branch test, called from both the Interpreter
 // and the recompiler.  (moved here to help alleviate redundant code)
-__fi void _cpuEventTest_Shared(void)
+__fi void _cpuEventTest_Shared()
 {
 	eeEventTestIsActive = true;
 	g_nextEventCycle = cpuRegs.cycle + eeWaitCycles;
@@ -341,11 +390,7 @@ __fi void _cpuEventTest_Shared(void)
 	if( cpuTestCycle( nextsCounter, nextCounter ) )
 	{
 		rcntUpdate();
-		// Perfs are updated when read by games (COP0's MFC0/MTC0 instructions), so we need
-		// only update them at semi-regular intervals to keep cpuRegs.cycle from wrapping
-		// around twice on us btween updates.  Hence this function is called from the cpu's
-		// Counters update.
-		COP0_UpdatePCCR();
+		_cpuTestPERF();
 	}
 
 	rcntUpdate_hScanline();
@@ -387,26 +432,30 @@ __fi void _cpuEventTest_Shared(void)
 
 	if( iopEventAction )
 	{
+		//if( EEsCycle < -450 )
+		//	Console.WriteLn( " IOP ahead by: %d cycles", -EEsCycle );
+
 		EEsCycle = psxCpu->ExecuteBlock( EEsCycle );
 
 		iopEventAction = false;
 	}
 
-	// ---- VU0 -------------
+	// ---- VU Sync -------------
 	// We're in a EventTest.  All dynarec registers are flushed
 	// so there is no need to freeze registers here.
 	CpuVU0->ExecuteBlock();
 	CpuVU1->ExecuteBlock();
-	// Note:  We don't update the VU1 here because it runs it's micro-programs in
-	// one shot always.  That is, when a program is executed the VU1 doesn't even
-	// bother to return until the program is completely finished.
 
 	// ---- Schedule Next Event Test --------------
 
-	// EE's running way ahead of the IOP still, so we should branch quickly to give the
-	// IOP extra timeslices in short order.
 	if( EEsCycle > 192 )
+	{
+		// EE's running way ahead of the IOP still, so we should branch quickly to give the
+		// IOP extra timeslices in short order.
+
 		cpuSetNextEventDelta( 48 );
+		//Console.Warning( "EE ahead of the IOP -- Rapid Event!  %d", EEsCycle );
+	}
 
 	// The IOP could be running ahead/behind of us, so adjust the iop's next branch by its
 	// relative position to the EE (via EEsCycle)
@@ -421,7 +470,7 @@ __fi void _cpuEventTest_Shared(void)
 	eeEventTestIsActive = false;
 }
 
-__ri void cpuTestINTCInts(void)
+__ri void cpuTestINTCInts()
 {
 	// Check the COP0's Status register for general interrupt disables, and the 0x400
 	// bit (which is INTC master toggle).
@@ -437,7 +486,7 @@ __ri void cpuTestINTCInts(void)
 	}
 }
 
-__fi void cpuTestDMACInts(void)
+__fi void cpuTestDMACInts()
 {
 	// Check the COP0's Status register for general interrupt disables, and the 0x800
 	// bit (which is the DMAC master toggle).
@@ -454,16 +503,17 @@ __fi void cpuTestDMACInts(void)
 	}
 }
 
-__fi void cpuTestTIMRInts(void)
-{
+__fi void cpuTestTIMRInts() {
 	if ((cpuRegs.CP0.n.Status.val & 0x10007) == 0x10001) {
-		// Perfs are updated when read by games (COP0's MFC0/MTC0 instructions), so we need
-		// only update them at semi-regular intervals to keep cpuRegs.cycle from wrapping
-		// around twice on us btween updates.  Hence this function is called from the cpu's
-		// Counters update.
-		COP0_UpdatePCCR();
+		_cpuTestPERF();
 		_cpuTestTIMR();
 	}
+}
+
+__fi void cpuTestHwInts() {
+	cpuTestINTCInts();
+	cpuTestDMACInts();
+	cpuTestTIMRInts();
 }
 
 __fi void CPU_INT( EE_EventType n, s32 ecycle)
@@ -491,23 +541,35 @@ __fi void CPU_INT( EE_EventType n, s32 ecycle)
 	cpuSetNextEventDelta( cpuRegs.eCycle[n] );
 }
 
-// Called from recompilers; __fastcall define is mandatory.
-void __fastcall eeGameStarting(void)
+// Called from recompilers; define is mandatory.
+void eeGameStarting()
 {
 	if (!g_GameStarted)
 	{
+		//Console.WriteLn( Color_Green, "(R5900) ELF Entry point! [addr=0x%08X]", ElfEntry );
 		g_GameStarted = true;
 		g_GameLoading = false;
-		GetCoreThread().GameStartingInThread();
 
 		// GameStartingInThread may issue a reset of the cpu and/or recompilers.  Check for and
 		// handle such things here:
-		Cpu->CheckExecutionState();
+#ifndef PCSX2_CORE
+		GetCoreThread().GameStartingInThread();
+		if (GetCoreThread().HasPendingStateChangeRequest())
+			Cpu->ExitExecution();
+#else
+		VMManager::Internal::GameStartingOnCPUThread();
+		if (VMManager::Internal::IsExecutionInterrupted())
+			Cpu->ExitExecution();
+#endif
+	}
+	else
+	{
+		Console.WriteLn( Color_Green, "(R5900) Re-executed ELF Entry point (ignored) [addr=0x%08X]", ElfEntry );
 	}
 }
 
 // Count arguments, save their starting locations, and replace the space separators with null terminators so they're separate strings
-static int ParseArgumentString(u32 arg_block)
+int ParseArgumentString(u32 arg_block)
 {
 	if (!arg_block)
 		return 0;
@@ -533,30 +595,50 @@ static int ParseArgumentString(u32 arg_block)
 				argc++;
 			}
 			else
+			{
+				Console.WriteLn("ParseArgumentString: Discarded additional arguments beyond the maximum of %d.", kMaxArgs);
 				break;
+			}
 		}
 		wasSpace = isSpace;
 	}
+#if DEBUG_LAUNCHARG
+	// Check our args block
+	Console.WriteLn("ParseArgumentString: Saving these strings:");
+	for (int a = 0; a < argc; a++)
+		Console.WriteLn("%p -> '%s'.", g_argPtrs[a], (char *)PSM(g_argPtrs[a]));
+#endif
 	return argc;
 }
 
-// Called from recompilers; __fastcall define is mandatory.
-void __fastcall eeloadHook(void)
+// Called from recompilers; define is mandatory.
+void eeloadHook()
 {
-	const wxString &elf_override = GetCoreThread().GetElfOverride();
+#ifndef PCSX2_CORE
+	const std::string elf_override(StringUtil::wxStringToUTF8String(GetCoreThread().GetElfOverride()));
+#else
+	const std::string& elf_override(VMManager::Internal::GetElfOverride());
+#endif
 
-	if (!elf_override.IsEmpty())
-		cdvdReloadElfInfo(L"host:" + elf_override);
+	if (!elf_override.empty())
+		cdvdReloadElfInfo(StringUtil::StdStringFromFormat("host:%s", elf_override.c_str()));
 	else
 		cdvdReloadElfInfo();
 
-	wxString discelf;
+	std::string discelf;
 	int disctype = GetPS2ElfName(discelf);
 
 	std::string elfname;
 	int argc = cpuRegs.GPR.n.a0.SD[0];
 	if (argc) // calls to EELOAD *after* the first one during the startup process will come here
 	{
+#if DEBUG_LAUNCHARG
+		Console.WriteLn("eeloadHook: EELOAD was called with %d arguments according to $a0 and %d according to vargs block:",
+			argc, memRead32(cpuRegs.GPR.n.a1.UD[0] - 4));
+		for (int a = 0; a < argc; a++)
+			Console.WriteLn("argv[%d]: %p -> %p -> '%s'", a, cpuRegs.GPR.n.a1.UL[0] + (a * 4),
+				memRead32(cpuRegs.GPR.n.a1.UD[0] + (a * 4)), (char *)PSM(memRead32(cpuRegs.GPR.n.a1.UD[0] + (a * 4))));
+#endif
 		if (argc > 1)
 			elfname = (char*)PSM(memRead32(cpuRegs.GPR.n.a1.UD[0] + 4)); // argv[1] in OSDSYS's invocation "EELOAD <game ELF>"
 
@@ -565,8 +647,11 @@ void __fastcall eeloadHook(void)
 		// mode). Then EELOAD is called with the argument "rom0:PS2LOGO". At this point, we do not need any additional tricks
 		// because EELOAD is now ready to accept launch arguments. So in full-boot mode, we simply wait for PS2LOGO to be called,
 		// then we add the desired launch arguments. PS2LOGO passes those on to the game itself as it calls EELOAD a third time.
-		if (!g_Conf->CurrentGameArgs.empty() && !strcmp(elfname.c_str(), "rom0:PS2LOGO"))
+		if (!EmuConfig.CurrentGameArgs.empty() && !strcmp(elfname.c_str(), "rom0:PS2LOGO"))
 		{
+			const char *argString = EmuConfig.CurrentGameArgs.c_str();
+			Console.WriteLn("eeloadHook: Supplying launch argument(s) '%s' to module '%s'...", argString, elfname.c_str());
+
 			// Join all arguments by space characters so they can be processed as one string by ParseArgumentString(), then add the
 			// user's launch arguments onto the end
 			u32 arg_ptr = 0;
@@ -577,32 +662,51 @@ void __fastcall eeloadHook(void)
 				arg_len = strlen((char *)PSM(arg_ptr));
 				memset(PSM(arg_ptr + arg_len), 0x20, 1);
 			}
-			strcpy((char *)PSM(arg_ptr + arg_len + 1), g_Conf->CurrentGameArgs.c_str());
+			strcpy((char *)PSM(arg_ptr + arg_len + 1), EmuConfig.CurrentGameArgs.c_str());
 			u32 first_arg_ptr = memRead32(cpuRegs.GPR.n.a1.UD[0]);
+#if DEBUG_LAUNCHARG
+			Console.WriteLn("eeloadHook: arg block is '%s'.", (char *)PSM(first_arg_ptr));
+#endif
 			argc = ParseArgumentString(first_arg_ptr);
 
 			// Write pointer to next slot in $a1
 			for (int a = 0; a < argc; a++)
 				memWrite32(cpuRegs.GPR.n.a1.UD[0] + (a * 4), g_argPtrs[a]);
 			cpuRegs.GPR.n.a0.SD[0] = argc;
+#if DEBUG_LAUNCHARG
+			// Check our work
+			Console.WriteLn("eeloadHook: New arguments are:");
+			for (int a = 0; a < argc; a++)
+				Console.WriteLn("argv[%d]: %p -> '%s'", a, memRead32(cpuRegs.GPR.n.a1.UD[0] + (a * 4)),
+				(char *)PSM(memRead32(cpuRegs.GPR.n.a1.UD[0] + (a * 4))));
+#endif
 		}
 		// else it's presumed that the invocation is "EELOAD <game ELF> <<launch args>>", coming from PS2LOGO, and we needn't do
 		// anything more
 	}
+#if DEBUG_LAUNCHARG
+	// This code fires in full/fast boot mode when EELOAD is called the first/only time. When EELOAD is not given any arguments,
+	// it calls rom0:OSDSYS by default, which displays the Sony Computer Entertainment screen. OSDSYS then calls "EELOAD
+	// rom0:PS2LOGO" and we end up above.
+	else
+		Console.WriteLn("eeloadHook: EELOAD was called with no arguments.");
+#endif
+
 	// If "fast boot" was chosen, then on EELOAD's first call we won't yet know what the game's ELF is. Find the name and write it
 	// into EELOAD's memory.
 	if (g_SkipBiosHack && elfname.empty())
 	{
 		std::string elftoload;
-		if (!elf_override.IsEmpty())
+		if (!elf_override.empty())
 		{
-			elftoload = "host:";
-			elftoload += elf_override.ToUTF8();
+			elftoload = StringUtil::StdStringFromFormat("host:%s", elf_override.c_str());
 		}
 		else
 		{
 			if (disctype == 2)
-				elftoload = discelf.ToUTF8();
+				elftoload = discelf;
+			else
+				g_SkipBiosHack = false; // We're not fast booting, so disable it (Fixes some weirdness with the BIOS)
 		}
 
 		// When fast-booting, we insert the game's ELF name into EELOAD so that the game is called instead of the default call of
@@ -623,35 +727,50 @@ void __fastcall eeloadHook(void)
 		}
 	}
 
-	if (!g_GameStarted && (disctype == 2 || disctype == 1) && elfname == discelf)
+	if (!g_GameStarted && ((disctype == 2 && elfname == discelf) || disctype == 1))
 		g_GameLoading = true;
 }
 
-// Called from recompilers; __fastcall define is mandatory.
+// Called from recompilers; define is mandatory.
 // Only called if g_SkipBiosHack is true
-void __fastcall eeloadHook2(void)
+void eeloadHook2()
 {
-	if (g_Conf->CurrentGameArgs.empty())
+	if (EmuConfig.CurrentGameArgs.empty())
 		return;
 
 	if (!g_osdsys_str)
+	{
+		Console.WriteLn("eeloadHook2: Called before \"rom0:OSDSYS\" was found by eeloadHook()!");
 		return;
+	}
 
-	const char *argString = g_Conf->CurrentGameArgs.c_str();
+	const char *argString = EmuConfig.CurrentGameArgs.c_str();
+	Console.WriteLn("eeloadHook2: Supplying launch argument(s) '%s' to ELF '%s'.", argString, (char *)PSM(g_osdsys_str));
 
 	// Add args string after game's ELF name that was written over "rom0:OSDSYS" by eeloadHook(). In between the ELF name and args
 	// string we insert a space character so that ParseArgumentString() has one continuous string to process.
 	int game_len = strlen((char *)PSM(g_osdsys_str));
 	memset(PSM(g_osdsys_str + game_len), 0x20, 1);
-	strcpy((char *)PSM(g_osdsys_str + game_len + 1), g_Conf->CurrentGameArgs.c_str());
+	strcpy((char *)PSM(g_osdsys_str + game_len + 1), EmuConfig.CurrentGameArgs.c_str());
+#if DEBUG_LAUNCHARG
+	Console.WriteLn("eeloadHook2: arg block is '%s'.", (char *)PSM(g_osdsys_str));
+#endif
 	int argc = ParseArgumentString(g_osdsys_str);
 	
 	// Back up 4 bytes from start of args block for every arg + 4 bytes for start of argv pointer block, write pointers
 	uptr block_start = g_osdsys_str - (argc * 4);
 	for (int a = 0; a < argc; a++)
+	{
+#if DEBUG_LAUNCHARG
+		Console.WriteLn("eeloadHook2: Writing address %p to location %p.", g_argPtrs[a], block_start + (a * 4));
+#endif
 		memWrite32(block_start + (a * 4), g_argPtrs[a]);
+	}
 
 	// Save argc and argv as incoming arguments for EELOAD function which calls ExecPS2()
+#if DEBUG_LAUNCHARG
+	Console.WriteLn("eeloadHook2: Saving %d and %p in $a0 and $a1.", argc, block_start);
+#endif
 	cpuRegs.GPR.n.a0.SD[0] = argc;
 	cpuRegs.GPR.n.a1.UD[0] = block_start;
 }
@@ -659,6 +778,47 @@ void __fastcall eeloadHook2(void)
 inline bool isBranchOrJump(u32 addr)
 {
 	u32 op = memRead32(addr);
-	const R5900::OPCODE& opcode = R5900::GetInstruction(op);
+	const OPCODE& opcode = GetInstruction(op);
+	
+	// Return false for eret & syscall as they are branch type in pcsx2 debugging tools,
+	// but shouldn't have delay slot in isBreakpointNeeded/isMemcheckNeeded.
+	if ((opcode.flags == (IS_BRANCH | BRANCHTYPE_SYSCALL)) || (opcode.flags == (IS_BRANCH | BRANCHTYPE_ERET)))
+		return false;
+		
 	return (opcode.flags & IS_BRANCH) != 0;
+}
+
+// The next two functions return 0 if no breakpoint is needed,
+// 1 if it's needed on the current pc, 2 if it's needed in the delay slot
+// 3 if needed in both
+
+int isBreakpointNeeded(u32 addr)
+{
+	int bpFlags = 0;
+	if (CBreakPoints::IsAddressBreakPoint(BREAKPOINT_EE, addr))
+		bpFlags += 1;
+
+	// there may be a breakpoint in the delay slot
+	if (isBranchOrJump(addr) && CBreakPoints::IsAddressBreakPoint(BREAKPOINT_EE, addr+4))
+		bpFlags += 2;
+
+	return bpFlags;
+}
+
+int isMemcheckNeeded(u32 pc)
+{
+	if (CBreakPoints::GetNumMemchecks() == 0)
+		return 0;
+	
+	u32 addr = pc;
+	if (isBranchOrJump(addr))
+		addr += 4;
+
+	u32 op = memRead32(addr);
+	const OPCODE& opcode = GetInstruction(op);
+
+	if (opcode.flags & IS_MEMORY)
+		return addr == pc ? 1 : 2;
+
+	return 0;
 }

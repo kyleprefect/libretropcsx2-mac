@@ -15,6 +15,7 @@
 
 #include "PrecompiledHeader.h"
 #include "Global.h"
+#include "common/Assertions.h"
 
 static const s32 ADSR_MAX_VOL = 0x7fffffff;
 
@@ -39,6 +40,8 @@ void InitADSR() // INIT ADSR
 
 bool V_ADSR::Calculate()
 {
+	pxAssume(Phase != 0);
+
 	if (Releasing && (Phase < 5))
 		Phase = 5;
 
@@ -155,8 +158,7 @@ bool V_ADSR::Calculate()
 			Value = 0;
 			break;
 
-		default:
-			break;
+			jNO_DEFAULT
 	}
 
 	// returns true if the voice is active, or false if it's stopping.

@@ -32,8 +32,7 @@ struct _mcd
 
 	// Auto Eject
 	u32 ForceEjection_Timeout; // in SIO checks
-	wxDateTime ForceEjection_Timestamp;
-
+	u64 ForceEjection_Timestamp;
 
 	void GetSizeInfo(McdSizeInfo &info)
 	{
@@ -83,8 +82,8 @@ struct _mcd
 		FileMcd_NextFrame( port, slot );
 	}
 
-	bool ReIndex(const wxString& filter = L"") {
-		return FileMcd_ReIndex( port, slot, filter );
+	bool ReIndex(const std::string& filter) {
+		return FileMcd_ReIndex(port, slot, filter);
 	}
 };
 
@@ -113,14 +112,17 @@ struct _sio
 };
 
 extern _sio sio;
+extern _mcd mcds[2][4];
+extern _mcd *mcd;
 
-extern void sioInit(void);
-extern u8 sioRead8(void);
+extern void sioInit();
+extern u8 sioRead8();
 extern void sioWrite8(u8 value);
 extern void sioWriteCtrl16(u16 value);
-extern void sioInterrupt(void);
-extern void sioInterruptR(void);
-extern void sioStatRead(void);
-extern void sioSetGameSerial(const wxString& serial);
-extern void sioNextFrame(void);
-void ClearMcdEjectTimeoutNow(void);
+extern void sioInterrupt();
+extern void sioInterruptR();
+extern void SetForceMcdEjectTimeoutNow();
+extern void ClearMcdEjectTimeoutNow();
+extern void sioStatRead();
+extern void sioSetGameSerial(const std::string& serial);
+extern void sioNextFrame();

@@ -15,11 +15,19 @@
 
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
+#include "R3000A.h"
+#include "Common.h"
 
 #include "iR5900.h"
 #include "Sio.h"
 #include "Mdec.h"
+#include "IopSio2.h"
+#include "IopCounters.h"
+#include "IopHw.h"
+#include "IopDma.h"
+#include "CDVD/Ps1CD.h"
+#include "CDVD/CDVD.h"
+
 
 // NOTE: Any modifications to read/write fns should also go into their const counterparts
 // found in iPsxHw.cpp.
@@ -41,7 +49,8 @@ void psxHwReset() {
 __fi u8 psxHw4Read8(u32 add)
 {
 	u16 mem = add & 0xFF;
-	u8 ret  = cdvdRead(mem);
+	u8 ret = cdvdRead(mem);
+	PSXHW_LOG("HwRead8 from Cdvd [segment 0x1f40], addr 0x%02x = 0x%02x", mem, ret);
 	return ret;
 }
 
@@ -49,6 +58,7 @@ __fi void psxHw4Write8(u32 add, u8 value)
 {
 	u8 mem = (u8)add;	// only lower 8 bits are relevant (cdvd regs mirror across the page)
 	cdvdWrite(mem, value);
+	PSXHW_LOG("HwWrite8 to Cdvd [segment 0x1f40], addr 0x%02x = 0x%02x", mem, value);
 }
 
 void psxDmaInterrupt(int n)
@@ -93,7 +103,16 @@ void psxDmaInterrupt2(int n)
 		}
 	}
 	else if (HW_DMA_ICR2 & (1 << (16 + n)))
+	{
+		/*
+		if (HW_DMA_ICR2 & (1 << (24 + n))) {
+			Console.WriteLn("*PCSX2*: HW_DMA_ICR2 n=%d already set", n);
+		}
+		if (psxHu32(0x1070) & 8) {
+			Console.WriteLn("*PCSX2*: psxHu32(0x1070) 8 already set (n=%d)", n);
+		}*/
 		fire_interrupt = true;
+	}
 
 	if (fire_interrupt)
 	{

@@ -16,6 +16,14 @@
 #include "wx/chartype.h"
 #include "wx/buffer.h"
 
+#ifdef __DIGITALMARS__
+#include "typeinfo.h"
+#endif
+
+#if defined(__VISAGECPP__) && __IBMCPP__ >= 400
+#  undef __BSEXCPT__
+#endif
+
 #include <stdlib.h>
 
 class WXDLLIMPEXP_FWD_BASE wxString;
@@ -627,7 +635,11 @@ extern WXDLLIMPEXP_DATA_BASE(wxMBConv *) wxConvUI;
     #define wxFNCONV(name) wxConvFileName->cWX2MB(name)
     #define wxFNSTRINGCAST wxMBSTRINGCAST
 #else
+#if defined( __WXOSX_OR_COCOA__ ) && wxMBFILES
+    #define wxFNCONV(name) wxConvFileName->cWC2MB( wxConvLocal.cWX2WC(name) )
+#else
     #define wxFNCONV(name) name
+#endif
     #define wxFNSTRINGCAST WXSTRINGCAST
 #endif
 

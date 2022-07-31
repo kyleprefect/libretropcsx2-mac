@@ -24,6 +24,8 @@
 
 #if wxUSE_EVENTLOOP_SOURCE
 
+#define wxTRACE_EVT_SOURCE "EventSource"
+
 // handler used to process events on event loop sources
 class wxEventLoopSourceHandler
 {
@@ -87,6 +89,10 @@ inline wxEventLoopSource::~wxEventLoopSource() { }
     #include "wx/unix/evtloopsrc.h"
 #endif // __UNIX__
 
+#if defined(__WXGTK20__)
+    #include "wx/gtk/evtloopsrc.h"
+#endif
+
 #if defined(__DARWIN__)
     #include "wx/osx/evtloopsrc.h"
 #endif
@@ -94,3 +100,4 @@ inline wxEventLoopSource::~wxEventLoopSource() { }
 #endif // wxUSE_EVENTLOOP_SOURCE
 
 #endif // _WX_EVTLOOPSRC_H_
+

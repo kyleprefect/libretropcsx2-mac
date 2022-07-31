@@ -19,6 +19,15 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
+#ifndef WX_PRECOMP
+    #include "wx/intl.h"
+    #include "wx/log.h"
+#endif // PCH
+
 #include "wx/dir.h"
 
 #ifdef __WINDOWS__
@@ -48,7 +57,10 @@ inline bool IsFindDataOk(FIND_DATA fd)
 
 inline void FreeFindData(FIND_DATA fd)
 {
-    if ( !::FindClose(fd) ) { }
+    if ( !::FindClose(fd) )
+    {
+        wxLogLastError(wxT("FindClose"));
+    }
 }
 
 const wxChar *GetNameFromFindData(const FIND_STRUCT *finddata)
@@ -229,7 +241,9 @@ bool wxDirData::Read(wxString *filename)
         // open first
         wxString filespec = m_dirname;
         if ( !wxEndsWithPathSeparator(filespec) )
+        {
             filespec += wxT('\\');
+        }
         if ( !m_filespec )
             filespec += wxT("*.*");
         else
@@ -241,7 +255,20 @@ bool wxDirData::Read(wxString *filename)
     }
 
     if ( !IsFindDataOk(m_finddata) )
+    {
+#ifdef __WIN32__
+        DWORD err = ::GetLastError();
+
+        if ( err != ERROR_FILE_NOT_FOUND && err != ERROR_NO_MORE_FILES )
+        {
+            wxLogSysError(err, _("Cannot enumerate files in directory '%s'"),
+                          m_dirname.c_str());
+        }
+#endif // __WIN32__
+        //else: not an error, just no (such) files
+
         return false;
+    }
 
     const wxChar *name;
     FIND_ATTR attr;
@@ -249,11 +276,25 @@ bool wxDirData::Read(wxString *filename)
     for ( ;; )
     {
         if ( first )
+        {
             first = false;
+        }
         else
         {
             if ( !FindNext(m_finddata, m_filespec, PTR_TO_FINDDATA) )
+            {
+#ifdef __WIN32__
+                DWORD err = ::GetLastError();
+
+                if ( err != ERROR_NO_MORE_FILES )
+                {
+                    wxLogLastError(wxT("FindNext"));
+                }
+#endif // __WIN32__
+                //else: not an error, just no more (such) files
+
                 return false;
+            }
         }
 
         name = GetNameFromFindData(PTR_TO_FINDDATA);
@@ -320,10 +361,12 @@ bool wxDir::Open(const wxString& dirname)
 
         return true;
     }
+    else
+    {
+        m_data = NULL;
 
-    m_data = NULL;
-
-    return false;
+        return false;
+    }
 }
 
 bool wxDir::IsOpened() const
@@ -342,9 +385,11 @@ wxString wxDir::GetName() const
             // bring to canonical Windows form
             name.Replace(wxT("/"), wxT("\\"));
 
-	    // chop off the last (back)slash
             if ( name.Last() == wxT('\\') )
+            {
+                // chop off the last (back)slash
                 name.Truncate(name.length() - 1);
+            }
         }
     }
 
@@ -368,6 +413,8 @@ bool wxDir::GetFirst(wxString *filename,
                      const wxString& filespec,
                      int flags) const
 {
+    wxCHECK_MSG( IsOpened(), false, wxT("must wxDir::Open() first") );
+
     M_DIR->Rewind();
 
     M_DIR->SetFileSpec(filespec);
@@ -378,5 +425,48 @@ bool wxDir::GetFirst(wxString *filename,
 
 bool wxDir::GetNext(wxString *filename) const
 {
+    wxCHECK_MSG( IsOpened(), false, wxT("must wxDir::Open() first") );
+
+    wxCHECK_MSG( filename, false, wxT("bad pointer in wxDir::GetNext()") );
+
     return M_DIR->Read(filename);
 }
+
+// ----------------------------------------------------------------------------
+// wxGetDirectoryTimes: used by wxFileName::GetTimes()
+// ----------------------------------------------------------------------------
+
+#ifdef __WIN32__
+
+extern bool
+wxGetDirectoryTimes(const wxString& dirname,
+                    FILETIME *ftAccess, FILETIME *ftCreate, FILETIME *ftMod)
+{
+#ifdef __WXWINCE__
+    // FindFirst() is going to fail
+    wxASSERT_MSG( !dirname.empty(),
+                  wxT("incorrect directory name format in wxGetDirectoryTimes") );
+#else
+    // FindFirst() is going to fail
+    wxASSERT_MSG( !dirname.empty() && dirname.Last() != wxT('\\'),
+                  wxT("incorrect directory name format in wxGetDirectoryTimes") );
+#endif
+
+    FIND_STRUCT fs;
+    FIND_DATA fd = FindFirst(dirname, wxEmptyString, &fs);
+    if ( !IsFindDataOk(fd) )
+    {
+        return false;
+    }
+
+    *ftAccess = fs.ftLastAccessTime;
+    *ftCreate = fs.ftCreationTime;
+    *ftMod = fs.ftLastWriteTime;
+
+    FindClose(fd);
+
+    return true;
+}
+
+#endif // __WIN32__
+

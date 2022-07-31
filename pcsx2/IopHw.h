@@ -17,6 +17,8 @@
 
 #include "IopMem.h"
 
+#include "common/StringUtil.h"
+
 static const u32
 	HW_PS1_GPU_START = 0x1F8010A0,
 	HW_PS1_GPU_END   = 0x1F8010B0,
@@ -208,6 +210,7 @@ struct dma_mbc
 	{
 		return (bcr >> 16);
 	}
+	std::string desc() const { return StringUtil::StdStringFromFormat("madr: 0x%x bcr: 0x%x chcr: 0x%x", madr, bcr, chcr); }
 };
 
 struct dma_mbct
@@ -225,6 +228,7 @@ struct dma_mbct
 	{
 		return (bcr >> 16);
 	}
+	std::string desc() const { return StringUtil::StdStringFromFormat("madr: 0x%x bcr: 0x%x chcr: 0x%x tadr: 0x%x", madr, bcr, chcr, tadr); }
 };
 
 static dma_mbc&		hw_dma0		= (dma_mbc&) iopHw[0x1080];
@@ -275,6 +279,7 @@ static dma_mbc&		hw_dma12	= (dma_mbc&) iopHw[0x1550];
 #define HW_DMA7_MADR (psxHu32(0x1500)) // SPU2 DMA
 #define HW_DMA7_BCR  (psxHu32(0x1504))
 #define HW_DMA7_CHCR (psxHu32(0x1508))
+#define HW_DMA7_TADR (psxHu32(0x150C))
 
 #define HW_DMA8_MADR (psxHu32(0x1510)) // DEV9 DMA
 #define HW_DMA8_BCR  (psxHu32(0x1514))
@@ -315,6 +320,7 @@ enum IopEventId
 	IopEvt_Cdrom,
 	IopEvt_CdromRead,
 	IopEvt_CdvdRead,
+	IopEvt_CdvdSectorReady,
 	IopEvt_DEV9,
 	IopEvt_USB,
 };

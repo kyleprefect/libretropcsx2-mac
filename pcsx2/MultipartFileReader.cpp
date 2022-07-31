@@ -15,19 +15,30 @@
 
 #include "PrecompiledHeader.h"
 #include "AsyncFileReader.h"
+#include "common/Assertions.h"
+#include "common/FileSystem.h"
+#include "common/Path.h"
+#include "common/StringUtil.h"
 
 // Tests for a filename extension in both upper and lower case, if the filesystem happens
 // to be case-sensitive.
-bool pxFileExists_WithExt( const wxFileName& filename, const wxString& ext )
+static bool pxFileExists_WithExt( std::string& filename, const std::string& ext )
 {
-	wxFileName part1 = filename;
-	part1.SetExt( ext.Lower() );
+	std::string temp(Path::ReplaceExtension(filename, StringUtil::toLower(ext)));
+	if (FileSystem::FileExists(temp.c_str()))
+		return true;
 
-	if (part1.FileExists()) return true;
-	if (!wxFileName::IsCaseSensitive()) return false;
+#if defined(_WIN32) || defined(__DARWIN__)
+	temp = Path::ReplaceExtension(filename, StringUtil::toUpper(ext));
+	if (FileSystem::FileExists(temp.c_str()))
+	{
+		// make sure we open the correct one
+		filename = std::move(temp);
+		return true;
+	}
+#endif
 
-	part1.SetExt( ext.Upper() );
-	return part1.FileExists();
+	return false;
 }
 
 AsyncFileReader* MultipartFileReader::DetectMultipart(AsyncFileReader* reader)
@@ -37,7 +48,7 @@ AsyncFileReader* MultipartFileReader::DetectMultipart(AsyncFileReader* reader)
 	multi->FindParts();
 	if (multi->m_numparts > 1)
 	{
-		log_cb(RETRO_LOG_INFO, "isoFile: multi-part ISO detected.  %u parts found.\n", multi->m_numparts);
+		Console.WriteLn( Color_Blue, "isoFile: multi-part ISO detected.  %u parts found.", multi->m_numparts);
 
 		return multi;
 	}
@@ -66,9 +77,11 @@ MultipartFileReader::~MultipartFileReader(void)
 
 void MultipartFileReader::FindParts()
 {
-	wxFileName nameparts( m_filename );
-	wxString curext( nameparts.GetExt() );
-	wxChar prefixch = wxTolower(curext[0]);
+	std::string curext(Path::GetExtension(m_filename));
+	if (curext.empty())
+		return;
+
+	char prefixch = std::tolower(curext[0]);
 
 	// Multi-part rules!
 	//  * The first part can either be the proper extension (ISO, MDF, etc) or the numerical
@@ -78,20 +91,19 @@ void MultipartFileReader::FindParts()
 
 	uint i = 0;
 
-	if ((curext.Length() == 3) && (curext[1] == L'0') && (curext[2] == L'0'))
+	if ((curext.length() == 3) && (curext[1] == '0') && (curext[2] == '0'))
 	{
 		// First file is an OO, so skip 0 in the loop below:
 		i = 1;
 	}
 
-	FastFormatUnicode extbuf;
-
-	extbuf.Write( L"%c%02u", prefixch, i );
-	nameparts.SetExt( extbuf );
+	std::string extbuf(StringUtil::StdStringFromFormat("%c%02u", prefixch, i));
+	std::string nameparts(Path::ReplaceExtension(m_filename, extbuf));
 	if (!pxFileExists_WithExt(nameparts, extbuf))
 		return;
 
-	log_cb(RETRO_LOG_DEBUG, "isoFile: multi-part %s detected...\n", WX_STR(curext.Upper()) );
+	DevCon.WriteLn( Color_Blue, "isoFile: multi-part %s detected...", StringUtil::toUpper(curext).c_str() );
+	ConsoleIndentScope indent;
 
 	int bsize = m_parts[0].reader->GetBlockSize();
 	int blocks = m_parts[0].end;
@@ -100,20 +112,23 @@ void MultipartFileReader::FindParts()
 
 	for (; i < MaxParts; ++i)
 	{
-		extbuf.Clear();
-		extbuf.Write( L"%c%02u", prefixch, i );
-		nameparts.SetExt( extbuf );
+		extbuf = StringUtil::StdStringFromFormat("%c%02u", prefixch, i );
+		nameparts = Path::ReplaceExtension(m_filename, extbuf);
 		if (!pxFileExists_WithExt(nameparts, extbuf))
 			break;
 
 		Part* thispart = m_parts + m_numparts;
-		AsyncFileReader* thisreader = thispart->reader = new FlatFileReader();
+		AsyncFileReader* thisreader = new FlatFileReader();
 
-		wxString name = nameparts.GetFullPath();
+		if (!thisreader->Open(nameparts))
+		{
+			delete thisreader;
+			break;
+		}
 
-		thisreader->Open(name);
 		thisreader->SetBlockSize(bsize);
 
+		thispart->reader = thisreader;
 		thispart->start = blocks;
 
 		uint bcount =  thisreader->GetBlockCount();
@@ -121,20 +136,18 @@ void MultipartFileReader::FindParts()
 
 		thispart->end = blocks;
 
-#ifndef NDEBUG
-		log_cb(RETRO_LOG_DEBUG, "\tblocks %u - %u in: %s\n",
+		DevCon.WriteLn( Color_Blue, "\tblocks %u - %u in: %s",
 			thispart->start, thispart->end,
-			WX_STR(nameparts.GetFullPath())
+			nameparts.c_str()
 		);
-#endif
 
 		++m_numparts;
 	}
 
-	//log_cb(RETRO_LOG_DEBUG, "isoFile: multi-part ISO loaded (%u parts found)\n", m_numparts );
+	//Console.WriteLn( Color_Blue, "isoFile: multi-part ISO loaded (%u parts found)", m_numparts );
 }
 
-bool MultipartFileReader::Open(const wxString& fileName)
+bool MultipartFileReader::Open(std::string fileName)
 {
 	// Cannot open a MultipartFileReader directly,
 	// use DetectMultipart to convert a FlatFileReader
@@ -143,8 +156,8 @@ bool MultipartFileReader::Open(const wxString& fileName)
 
 uint MultipartFileReader::GetFirstPart(uint lsn)
 {
-	pxAssertMsg(lsn < GetBlockCount());
-	pxAssertMsg(m_numparts);
+	pxAssertMsg(lsn < GetBlockCount(),	"Invalid lsn passed into MultipartFileReader::GetFirstPart.");
+	pxAssertMsg(m_numparts, "Invalid object state; multi-part iso file needs at least one part!");
 
 	for (uint i = 0; i < m_numparts; ++i)
 	{

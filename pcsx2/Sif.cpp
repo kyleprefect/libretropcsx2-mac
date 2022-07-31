@@ -17,10 +17,11 @@
 
 #define _PC_	// disables MIPS opcode macros.
 
-#include "IopCommon.h"
+#include "R3000A.h"
+#include "Common.h"
 #include "Sif.h"
 
-void sifReset(void)
+void sifReset()
 {
 	memzero(sif0);
 	memzero(sif1);

@@ -25,6 +25,13 @@
 // wxLongLongNative -- this is extremely useful to find the bugs in
 // wxLongLongWx class!
 
+// #define wxLONGLONG_TEST_MODE
+
+#ifdef wxLONGLONG_TEST_MODE
+    #define wxUSE_LONGLONG_WX 1
+    #define wxUSE_LONGLONG_NATIVE 1
+#endif // wxLONGLONG_TEST_MODE
+
 // ----------------------------------------------------------------------------
 // decide upon which class we will use
 // ----------------------------------------------------------------------------
@@ -34,10 +41,17 @@
     // unknown pragma should never be an error -- except that, actually, some
     // broken compilers don't like it, so we have to disable it in this case
     // <sigh>
-#warning "Your compiler does not appear to support 64 bit "\
-	"integers, using emulation class instead.\n" \
-	"Please report your compiler version to " \
-	"wx-dev@lists.wxwidgets.org!"
+    #ifdef __GNUC__
+        #warning "Your compiler does not appear to support 64 bit "\
+                 "integers, using emulation class instead.\n" \
+                 "Please report your compiler version to " \
+                 "wx-dev@lists.wxwidgets.org!"
+    #elif !(defined(__WATCOMC__) || defined(__VISAGECPP__))
+        #pragma warning "Your compiler does not appear to support 64 bit "\
+                        "integers, using emulation class instead.\n" \
+                        "Please report your compiler version to " \
+                        "wx-dev@lists.wxwidgets.org!"
+    #endif
 
     #define wxUSE_LONGLONG_WX 1
 #endif // compiler
@@ -161,6 +175,9 @@ public:
         // convert to long with range checking in debug mode (only!)
     long ToLong() const
     {
+        wxASSERT_MSG( (m_ll >= LONG_MIN) && (m_ll <= LONG_MAX),
+                      wxT("wxLongLong to long conversion loss of precision") );
+
         return wx_truncate_cast(long, m_ll);
     }
 
@@ -299,6 +316,9 @@ public:
         // return the string representation of this number
     wxString ToString() const;
 
+        // conversion to byte array: returns a pointer to static buffer!
+    void *asArray() const;
+
 #if wxUSE_STD_IOSTREAM
         // input/output
     friend WXDLLIMPEXP_BASE
@@ -383,6 +403,9 @@ public:
         // convert to ulong with range checking in debug mode (only!)
     unsigned long ToULong() const
     {
+        wxASSERT_MSG( m_ll <= ULONG_MAX,
+                      wxT("wxULongLong to long conversion loss of precision") );
+
         return wx_truncate_cast(unsigned long, m_ll);
     }
 
@@ -521,6 +544,9 @@ public:
         // return the string representation of this number
     wxString ToString() const;
 
+        // conversion to byte array: returns a pointer to static buffer!
+    void *asArray() const;
+
 #if wxUSE_STD_IOSTREAM
         // input/output
     friend WXDLLIMPEXP_BASE
@@ -560,6 +586,12 @@ public:
     wxLongLongWx()
     {
         m_lo = m_hi = 0;
+
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = 0;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
     }
         // from long
     wxLongLongWx(long l) { *this = l; }
@@ -568,6 +600,14 @@ public:
     {
         m_hi = hi;
         m_lo = lo;
+
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = hi;
+        m_ll <<= 32;
+        m_ll |= lo;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
     }
 
     // default copy ctor is ok in both cases
@@ -580,6 +620,13 @@ public:
     {
         m_lo = l;
         m_hi = (l < 0 ? -1l : 0l);
+
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = l;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
+
         return *this;
     }
         // from int
@@ -592,6 +639,13 @@ public:
     {
         m_lo = l;
         m_hi = 0;
+
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = l;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
+
         return *this;
     }
 
@@ -618,12 +672,23 @@ public:
     {
         if ( m_hi < 0 )
             m_hi = -m_hi;
+
+#ifdef wxLONGLONG_TEST_MODE
+        if ( m_ll < 0 )
+            m_ll = -m_ll;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
+
         return *this;
     }
 
         // convert to long with range checking in debug mode (only!)
     long ToLong() const
     {
+        wxASSERT_MSG( (m_hi == 0l) || (m_hi == -1l),
+                      wxT("wxLongLong to long conversion loss of precision") );
+
         return (long)m_lo;
     }
 
@@ -721,6 +786,8 @@ public:
     // return the string representation of this number
     wxString ToString() const;
 
+    void *asArray() const;
+
 #if wxUSE_STD_IOSTREAM
     friend WXDLLIMPEXP_BASE
     wxSTD ostream& operator<<(wxSTD ostream&, const wxLongLongWx&);
@@ -741,6 +808,15 @@ private:
 
     long m_hi;                // signed bit is in the high part
     unsigned long m_lo;
+
+#ifdef wxLONGLONG_TEST_MODE
+    void Check()
+    {
+        wxASSERT( (m_ll >> 32) == m_hi && (unsigned long)m_ll == m_lo );
+    }
+
+    wxLongLong_t m_ll;
+#endif // wxLONGLONG_TEST_MODE
 };
 
 
@@ -752,6 +828,12 @@ public:
     wxULongLongWx()
     {
         m_lo = m_hi = 0;
+
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = 0;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
     }
         // from ulong
     wxULongLongWx(unsigned long l) { *this = l; }
@@ -760,11 +842,20 @@ public:
     {
         m_hi = hi;
         m_lo = lo;
+
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = hi;
+        m_ll <<= 32;
+        m_ll |= lo;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
     }
 
     // from signed to unsigned
     wxULongLongWx(wxLongLongWx ll)
     {
+        wxASSERT(ll.GetHi() >= 0);
         m_hi = (unsigned long)ll.GetHi();
         m_lo = ll.GetLo();
     }
@@ -780,6 +871,12 @@ public:
         m_lo = l;
         m_hi = 0;
 
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = l;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
+
         return *this;
     }
     wxULongLongWx& operator=(long l)
@@ -787,9 +884,17 @@ public:
         m_lo = l;
         m_hi = (unsigned long) ((l<0) ? -1l : 0);
 
+#ifdef wxLONGLONG_TEST_MODE
+        m_ll = (wxULongLong_t) (wxLongLong_t) l;
+
+        Check();
+#endif // wxLONGLONG_TEST_MODE
+
         return *this;
     }
     wxULongLongWx& operator=(const class wxLongLongWx &ll) {
+        // Should we use an assert like it was before in the constructor?
+        // wxASSERT(ll.GetHi() >= 0);
         m_hi = (unsigned long)ll.GetHi();
         m_lo = ll.GetLo();
         return *this;
@@ -806,6 +911,9 @@ public:
         // convert to long with range checking in debug mode (only!)
     unsigned long ToULong() const
     {
+        wxASSERT_MSG( m_hi == 0ul,
+                      wxT("wxULongLong to long conversion loss of precision") );
+
         return (unsigned long)m_lo;
     }
 
@@ -894,6 +1002,8 @@ public:
     // return the string representation of this number
     wxString ToString() const;
 
+    void *asArray() const;
+
 #if wxUSE_STD_IOSTREAM
     friend WXDLLIMPEXP_BASE
     wxSTD ostream& operator<<(wxSTD ostream&, const wxULongLongWx&);
@@ -915,6 +1025,14 @@ private:
     unsigned long m_hi;
     unsigned long m_lo;
 
+#ifdef wxLONGLONG_TEST_MODE
+    void Check()
+    {
+        wxASSERT( (m_ll >> 32) == m_hi && (unsigned long)m_ll == m_lo );
+    }
+
+    wxULongLong_t m_ll;
+#endif // wxLONGLONG_TEST_MODE
 };
 
 #endif // wxUSE_LONGLONG_WX
@@ -1013,6 +1131,7 @@ struct WXDLLIMPEXP_BASE wxArgNormalizer<wxLongLong>
                      const wxFormatString *fmt, unsigned index)
          : m_value(value)
      {
+         wxASSERT_ARG_TYPE( fmt, index, wxFormatString::Arg_LongLongInt );
      }
 
      wxLongLong_t get() const { return m_value.GetValue(); }

@@ -15,10 +15,20 @@
 
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
+#include "R3000A.h"
+#include "Common.h"
 
 #include "Sio.h"
 #include "Sif.h"
+#include "DebugTools/Breakpoints.h"
+#include "R5900OpcodeTables.h"
+#include "IopSio2.h"
+#include "IopCounters.h"
+#include "IopBios.h"
+#include "IopHw.h"
+#include "IopDma.h"
+#include "CDVD/Ps1CD.h"
+#include "CDVD/CDVD.h"
 
 using namespace R3000A;
 
@@ -48,7 +58,7 @@ bool iopEventAction = false;
 
 bool iopEventTestIsActive = false;
 
-__aligned16 psxRegisters psxRegs;
+alignas(16) psxRegisters psxRegs;
 
 void psxReset()
 {
@@ -72,8 +82,10 @@ void psxShutdown() {
 	//psxCpu->Shutdown();
 }
 
-void __fastcall psxException(u32 code, u32 bd)
+void psxException(u32 code, u32 bd)
 {
+//	PSXCPU_LOG("psxException %x: %x, %x", code, psxHu32(0x1070), psxHu32(0x1074));
+	//Console.WriteLn("!! psxException %x: %x, %x", code, psxHu32(0x1070), psxHu32(0x1074));
 	// Set the Cause
 	psxRegs.CP0.n.Cause &= ~0x7f;
 	psxRegs.CP0.n.Cause |= code;
@@ -81,6 +93,7 @@ void __fastcall psxException(u32 code, u32 bd)
 	// Set the EPC & PC
 	if (bd)
 	{
+		PSXCPU_LOG("bd set");
 		psxRegs.CP0.n.Cause|= 0x80000000;
 		psxRegs.CP0.n.EPC = (psxRegs.pc - 4);
 	}
@@ -130,6 +143,10 @@ __fi int psxTestCycle( u32 startCycle, s32 delta )
 
 __fi void PSX_INT( IopEventId n, s32 ecycle )
 {
+	// 19 is CDVD read int, it's supposed to be high.
+	//if (ecycle > 8192 && n != 19)
+	//	DevCon.Warning( "IOP cycles high: %d, n %d", ecycle, n );
+
 	psxRegs.interrupt |= 1 << n;
 
 	psxRegs.sCycle[n] = psxRegs.cycle;
@@ -168,6 +185,7 @@ static __fi void _psxTestInterrupts()
 	// Originally controlled by a preprocessor define, now PSX dependent.
 	if (psxHu32(HW_ICFG) & (1 << 3)) IopTestEvent(IopEvt_SIO, sioInterruptR);
 	IopTestEvent(IopEvt_CdvdRead,	cdvdReadInterrupt);
+	IopTestEvent(IopEvt_CdvdSectorReady, cdvdSectorReady);
 
 	// Profile-guided Optimization (sorta)
 	// The following ints are rarely called.  Encasing them in a conditional
@@ -200,7 +218,6 @@ __ri void iopEventTest()
 		g_iopNextEventCycle = psxNextsCounter+psxNextCounter;
 	}
 
-
 	if (psxRegs.interrupt)
 	{
 		iopEventTestIsActive = true;
@@ -212,6 +229,7 @@ __ri void iopEventTest()
 	{
 		if( (psxRegs.CP0.n.Status & 0xFE01) >= 0x401 )
 		{
+			PSXCPU_LOG("Interrupt: %x  %x", psxHu32(0x1070), psxHu32(0x1074));
 			psxException(0, 0);
 			iopEventAction = true;
 		}
@@ -230,6 +248,7 @@ void iopTestIntc()
 
 		cpuSetNextEventDelta( 16 );
 		iopEventAction = true;
+		//Console.Error( "** IOP Needs an EE EventText, kthx **  %d", iopCycleEE );
 
 		// Note: No need to set the iop's branch delta here, since the EE
 		// will run an IOP branch test regardless.
@@ -238,3 +257,45 @@ void iopTestIntc()
 		psxSetNextBranchDelta( 2 );
 }
 
+inline bool psxIsBranchOrJump(u32 addr)
+{
+	u32 op = iopMemRead32(addr);
+	const R5900::OPCODE& opcode = R5900::GetInstruction(op);
+
+	return (opcode.flags & IS_BRANCH) != 0;
+}
+
+// The next two functions return 0 if no breakpoint is needed,
+// 1 if it's needed on the current pc, 2 if it's needed in the delay slot
+// 3 if needed in both
+
+int psxIsBreakpointNeeded(u32 addr)
+{
+	int bpFlags = 0;
+	if (CBreakPoints::IsAddressBreakPoint(BREAKPOINT_IOP, addr))
+		bpFlags += 1;
+
+	// there may be a breakpoint in the delay slot
+	if (psxIsBranchOrJump(addr) && CBreakPoints::IsAddressBreakPoint(BREAKPOINT_IOP, addr + 4))
+		bpFlags += 2;
+
+	return bpFlags;
+}
+
+int psxIsMemcheckNeeded(u32 pc)
+{
+	if (CBreakPoints::GetNumMemchecks() == 0)
+		return 0;
+
+	u32 addr = pc;
+	if (psxIsBranchOrJump(addr))
+		addr += 4;
+
+	u32 op = iopMemRead32(addr);
+	const R5900::OPCODE& opcode = R5900::GetInstruction(op);
+
+	if (opcode.flags & IS_MEMORY)
+		return addr == pc ? 1 : 2;
+
+	return 0;
+}

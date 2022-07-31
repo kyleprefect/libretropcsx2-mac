@@ -1,4 +1,4 @@
-#!/bin/sh -u
+#!/bin/sh
 
 # PCSX2 - PS2 Emulator for PCs
 # Copyright (C) 2002-2014  PCSX2 Dev Team
@@ -15,52 +15,19 @@
 # If not, see <http://www.gnu.org/licenses/>.
 
 #set -e # This terminates the script in case of any error
+set -u
 
 # Function declarations
-set_ncpu_toolfile()
-{
-    if [ "$(uname -s)" = 'Darwin' ]; then
-        ncpu="$(sysctl -n hw.ncpu)"
-
-        # Get the major Darwin/OSX version.
-        if [ "$(sysctl -n kern.osrelease | cut -d . -f 1)" -lt 13 ]; then
-        echo "This old OSX version is not supported! Build will fail."
-        toolfile=cmake/darwin-compiler-i386-clang.cmake
-        else
-        echo "Using Mavericks build with C++11 support."
-        toolfile=cmake/darwin13-compiler-i386-clang.cmake
-        fi
-    elif [ "$(uname -s)" = 'FreeBSD' ]; then
-        ncpu="$(sysctl -n hw.ncpu)"
-    else
-        ncpu=$(grep -w -c processor /proc/cpuinfo)
-        toolfile=cmake/linux-compiler-i386-multilib.cmake
-    fi
-}
-
-switch_wxconfig()
-{
-    # Helper to easily switch wx-config on my system
-    if [ "$useCross" -eq 0 ] && [ "$(uname -m)" = "x86_64" ] && [ -e "/usr/lib/i386-linux-gnu/wx/config/gtk2-unicode-3.0" ]; then
-        sudo update-alternatives --set wx-config /usr/lib/x86_64-linux-gnu/wx/config/gtk2-unicode-3.0
-    fi
-    if [ "$useCross" -eq 2 ] && [ "$(uname -m)" = "x86_64" ] && [ -e "/usr/lib/x86_64-linux-gnu/wx/config/gtk2-unicode-3.0" ]; then
-        sudo update-alternatives --set wx-config /usr/lib/i386-linux-gnu/wx/config/gtk2-unicode-3.0
-    fi
-}
-
 find_freetype()
 {
-    if [ "$useCross" -eq 0 ] && [ "$(uname -m)" = "x86_64" ] && [ -e "/usr/include/x86_64-linux-gnu/freetype2/ft2build.h" ]; then
+    if [ "$(uname -m)" = "x86_64" ] && [ -e "/usr/include/x86_64-linux-gnu/freetype2/ft2build.h" ]; then
         export GTKMM_BASEPATH=/usr/include/x86_64-linux-gnu/freetype2
-    fi
-    if [ "$useCross" -eq 2 ] && [ "$(uname -m)" = "x86_64" ] && [ -e "/usr/include/i386-linux-gnu/freetype2/ft2build.h" ]; then
-        export GTKMM_BASEPATH=/usr/include/i386-linux-gnu/freetype2
     fi
 }
 
 set_make()
 {
+    ncpu=$(getconf NPROCESSORS_ONLN 2>/dev/null || getconf _NPROCESSORS_ONLN)
     if command -v ninja >/dev/null ; then
         flags="$flags -GNinja"
         make=ninja
@@ -72,18 +39,10 @@ set_make()
 set_compiler()
 {
     if [ "$useClang" -eq 1 ]; then
-        if [ "$useCross" -eq 0 ]; then
         CC=clang CXX=clang++ cmake $flags "$root" 2>&1 | tee -a "$log"
-        else
-        CC="clang -m32" CXX="clang++ -m32" cmake $flags "$root" 2>&1 | tee -a "$log"
-        fi
     else
         if [ "$useIcc" -eq 1 ]; then
-        if [ "$useCross" -eq 0 ]; then
             CC="icc" CXX="icpc" cmake $flags "$root" 2>&1 | tee -a "$log"
-        else
-            CC="icc -m32" CXX="icpc -m32" cmake $flags "$root" 2>&1 | tee -a "$log"
-        fi
         else
         # Default compiler AKA GCC
         cmake $flags "$root" 2>&1 | tee -a "$log"
@@ -107,13 +66,13 @@ run_cppcheck()
 
     check="--enable=warning,style,missingInclude"
 
-    for d in pcsx2 common plugins/GSdx plugins/spu2\-x plugins/onepad plugins/cdvdGigaherz
+    for d in pcsx2 common
     do
         flat_d=$(echo $d | sed -e 's@/@_@')
         log=cpp_check__${flat_d}.log
         rm -f "$log"
 
-        cppcheck $check -j $ncpu --platform=unix32 $define "$root/$d" 2>&1 | tee "$log"
+        cppcheck $check -j "$ncpu" --platform=unix32 "$define" "$root/$d" 2>&1 | tee "$log"
         # Create a small summary (warning it might miss some issues)
         fgrep -e "(warning)" -e "(error)" -e "(style)" -e "(performance)" -e "(portability)" "$log" >> $summary
     done
@@ -131,7 +90,7 @@ run_clangtidy()
     # EXAMPLE
     #
     #   Modernize loop syntax, fix if old style found.
-    #     $ clang-tidy -p build_dev/compile_commands.json plugins/GSdx/GSTextureCache.cpp -checks='modernize-loop-convert' -fix
+    #     $ clang-tidy -p build_dev/compile_commands.json pcsx2/GS/Renderers/HW/GSTextureCache.cpp -checks='modernize-loop-convert' -fix
     #   Check all, tons of output:
     #     $ clang-tidy -p $compile_json $cpp -checks='*' -header-filter='.*'
     #   List of modernize checks:
@@ -174,9 +133,6 @@ cleanBuild=0
 useClang=0
 useIcc=0
 
-# 0 => no, 1 => yes, 2 => force yes
-useCross=2
-
 CoverityBuild=0
 cppcheck=0
 clangTidy=0
@@ -187,13 +143,11 @@ build="$root/build"
 coverity_dir="cov-int"
 coverity_result=pcsx2-coverity.xz
 
-set_ncpu_toolfile
 set_make
 
 for ARG in "$@"; do
     case "$ARG" in
         --clean             ) cleanBuild=1 ;;
-        --clean-plugins     ) cleanBuild=2 ;;
         --clang-tidy        ) flags="$flags -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"; clangTidy=1 ; useClang=1;;
         --ftime-trace       ) flags="$flags -DTIMETRACE=TRUE"; useClang=1;;
         --clang             ) useClang=1 ;;
@@ -202,62 +156,55 @@ for ARG in "$@"; do
         --dev|--devel       ) flags="$flags -DCMAKE_BUILD_TYPE=Devel"   ; build="$root/build_dev";;
         --dbg|--debug       ) flags="$flags -DCMAKE_BUILD_TYPE=Debug"   ; build="$root/build_dbg";;
         --rel|--release     ) flags="$flags -DCMAKE_BUILD_TYPE=Release" ; build="$root/build_rel";;
-        --prof              ) flags="$flags -DCMAKE_BUILD_TYPE=Prof"    ; build="$root/build_prof";;
+        --prof              ) flags="$flags -DCMAKE_BUILD_TYPE=RelWithDebInfo"; build="$root/build_prof";;
         --strip             ) flags="$flags -DCMAKE_BUILD_STRIP=TRUE" ;;
-        --sdl12             ) flags="$flags -DSDL2_API=FALSE" ;;
-        --extra             ) flags="$flags -DEXTRA_PLUGINS=TRUE" ;;
+        --use-system-yaml   ) flags="$flags -DUSE_SYSTEM_YAML=TRUE" ;;
         --asan              ) flags="$flags -DUSE_ASAN=TRUE" ;;
-        --gtk3              ) flags="$flags -DGTK3_API=TRUE" ;;
-        --lto               ) flags="$flags -DUSE_LTO=TRUE" ;;
+        --gtk2              ) flags="$flags -DGTK2_API=TRUE" ;;
+        --lto               ) flags="$flags -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" ;;
         --pgo-optimize      ) flags="$flags -DUSE_PGO_OPTIMIZE=TRUE" ;;
         --pgo-generate      ) flags="$flags -DUSE_PGO_GENERATE=TRUE" ;;
-        --no-dev9ghzdrk     ) flags="$flags -DDISABLE_DEV9GHZDRK=TRUE" ;;
         --no-portaudio      ) flags="$flags -DPORTAUDIO_API=FALSE" ;;
         --no-simd           ) flags="$flags -DDISABLE_ADVANCE_SIMD=TRUE" ;;
         --no-trans          ) flags="$flags -DNO_TRANSLATION=TRUE" ;;
-        --cross-multilib    ) flags="$flags -DCMAKE_TOOLCHAIN_FILE=$toolfile"; useCross=1; ;;
-        --no-cross-multilib ) useCross=0; ;;
         --coverity          ) CoverityBuild=1; cleanBuild=1; ;;
+        --vtune             ) flags="$flags -DUSE_VTUNE=TRUE" ;;
         -D*                 ) flags="$flags $ARG" ;;
 
         *)
             echo $ARG
             # Unknown option
             echo "** User options **"
-            echo "--dev / --devel : Build PCSX2 as a Development build."
-            echo "--debug         : Build PCSX2 as a Debug build."
-            echo "--prof          : Build PCSX2 as a Profiler build (release + debug symbol)."
-            echo "--release       : Build PCSX2 as a Release build."
+            echo "--dev / --devel   : Build PCSX2 as a Development build."
+            echo "--dbg / --debug   : Build PCSX2 as a Debug build."
+            echo "--prof            : Build PCSX2 as a Profiler build (release + debug symbol)."
+            echo "--rel / --release : Build PCSX2 as a Release build."
             echo
-            echo "--clean         : Do a clean build."
-            echo "--clean-plugins : Do a clean build of plugins, but not of pcsx2."
-            echo "--extra         : Build all plugins"
-            echo "--no-simd       : Only allow sse2"
-            echo
-            echo "** Developer option **"
-            echo "--cross-multilib: Build a 32bit PCSX2 on a 64bit machine using multilib."
+            echo "--clean           : Do a clean build. (Remove anything in the build directory)"
+            echo "--no-simd         : Only allow sse2."
             echo
             echo "** Distribution Compatibilities **"
-            echo "--sdl12         : Build with SDL1.2 (requires if wx is linked against SDL1.2)"
-            echo "--no-dev9ghzdrk : Skip dev9ghzdrk. (Avoids needing escalated privileges to build.)"
-            echo "--no-portaudio  : Skip portaudio for spu2x."
+            echo "--no-portaudio    : Skip portaudio for SPU2."
+            echo "--use-system-yaml : Use system rapidyaml library."
             echo
             echo "** Expert Developer option **"
-            echo "--gtk3          : replace GTK2 by GTK3"
-            echo "--no-cross-multilib: Build a native PCSX2 (nonfunctional recompiler)"
-            echo "--no-trans      : Don't regenerate mo files when building."
-            echo "--clang         : Build with Clang/llvm"
-            echo "--intel         : Build with ICC (Intel compiler)"
-            echo "--lto           : Use Link Time Optimization"
-            echo "--pgo-generate  : Executable will generate profiling information when run"
-            echo "--pgo-optimize  : Use previously generated profiling information"
+            echo "--gtk2            : use GTK 2 instead of GTK 3."
+            echo "--no-trans        : Don't regenerate mo files when building."
+            echo "--strip           : Strip binaries to save a small amount of space."
+            echo "--clang           : Build with Clang/llvm."
+            echo "--intel           : Build with ICC (Intel compiler)."
+            echo "--lto             : Use Link Time Optimization."
+            echo "--pgo-generate    : Executable will generate profiling information when run."
+            echo "--pgo-optimize    : Use previously generated profiling information."
+            echo "-D<argument>      : Add <argument> to the flags passed."
             echo
             echo "** Quality & Assurance (Please install the external tool) **"
-            echo "--asan          : Enable Address sanitizer"
-            echo "--clang-tidy    : Do a clang-tidy analysis. Results can be found in build directory"
-            echo "--cppcheck      : Do a cppcheck analysis. Results can be found in build directory"
-            echo "--coverity      : Do a build for coverity"
-            echo "--ftime-trace   : Analyse build time. Clang only."
+            echo "--asan            : Enable Address sanitizer."
+            echo "--clang-tidy      : Do a clang-tidy analysis. Results can be found in build directory."
+            echo "--cppcheck        : Do a cppcheck analysis. Results can be found in build directory."
+            echo "--coverity        : Do a build for coverity."
+            echo "--vtune           : Plug GS with VTUNE."
+            echo "--ftime-trace     : Analyse build time. Clang only."
 
             exit 1
     esac
@@ -267,19 +214,7 @@ if [ "$cleanBuild" -eq 1 ]; then
     echo "Doing a clean build."
     # allow to keep build as a symlink (for example to a ramdisk)
     rm -fr "$build"/*
-elif [ "$cleanBuild" -eq 2 ]; then
-    echo "Doing a clean build on the plugins, but not pcsx2."
-    rm -fr "$build"/plugins/*
 fi
-
-if [ "$useCross" -eq 2 ] && [ "$(getconf LONG_BIT 2> /dev/null)" != 32 ]; then
-    echo "Forcing cross compilation."
-    flags="$flags -DCMAKE_TOOLCHAIN_FILE=$toolfile"
-elif [ "$useCross" -ne 1 ]; then
-    useCross=0
-fi
-
-switch_wxconfig
 
 # Workaround for Debian. Cmake failed to find freetype include path
 find_freetype
@@ -298,30 +233,18 @@ cd "$build"
 
 set_compiler
 
-############################################################
-# CPP check build
-############################################################
 if [ "$cppcheck" -eq 1 ] && command -v cppcheck >/dev/null ; then
     run_cppcheck
 fi
 
-############################################################
-# Clang tidy build
-############################################################
 if [ "$clangTidy" -eq 1 ] && command -v clang-tidy >/dev/null ; then
     run_clangtidy
 fi
 
-############################################################
-# Coverity build
-############################################################
 if [ "$CoverityBuild" -eq 1 ] && command -v cov-build >/dev/null ; then
     run_coverity
 fi
 
-############################################################
-# Real build
-############################################################
 $make 2>&1 | tee -a "$log"
 $make install 2>&1 | tee -a "$log"
 

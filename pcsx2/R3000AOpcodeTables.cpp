@@ -15,7 +15,9 @@
 
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
+#include "R3000A.h"
+#include "IopGte.h"
+#include "IopMem.h"
 
 // Note: Branch instructions of the Interpreter are defined externally because
 // the recompiler shouldn't be using them (it isn't entirely safe, due to the
@@ -168,8 +170,10 @@ void psxSYSCALL() {
 }
 
 void psxRFE() {
+//	Console.WriteLn("RFE\n");
 	psxRegs.CP0.n.Status = (psxRegs.CP0.n.Status & 0xfffffff0) |
 						  ((psxRegs.CP0.n.Status & 0x3c) >> 2);
+//	Log=0;
 }
 
 /*********************************************************
@@ -311,6 +315,7 @@ void psxCTC2() { _c2dRd_ = _u32(_rRt_); };
 * Format:  ?                                             *
 *********************************************************/
 void psxNULL() {
+Console.Warning("psx: Unimplemented op %x", psxRegs.code);
 }
 
 void psxSPECIAL() {

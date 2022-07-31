@@ -14,7 +14,8 @@
  */
 
 #include "PrecompiledHeader.h"
-#include "../CDVDdiscReader.h"
+#include "CDVD/CDVDdiscReader.h"
+#include "CDVD/CDVD.h"
 
 #include <winioctl.h>
 #include <ntddcdvd.h>
@@ -29,8 +30,8 @@
 #include <cstdlib>
 #include <stdexcept>
 
-IOCtlSrc::IOCtlSrc(decltype(m_filename) filename)
-	: m_filename(filename)
+IOCtlSrc::IOCtlSrc(std::string filename)
+	: m_filename(std::move(filename))
 {
 	if (!Reopen())
 		throw std::runtime_error(" * CDVD: Error opening source.\n");
@@ -53,7 +54,7 @@ bool IOCtlSrc::Reopen()
 		CloseHandle(m_device);
 
 	// SPTI only works if the device is opened with GENERIC_WRITE access.
-	m_device = CreateFile(m_filename.c_str(), GENERIC_READ | GENERIC_WRITE,
+	m_device = CreateFileA(m_filename.c_str(), GENERIC_READ | GENERIC_WRITE,
 						  FILE_SHARE_READ, nullptr, OPEN_EXISTING,
 						  FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 	if (m_device == INVALID_HANDLE_VALUE)
@@ -82,8 +83,16 @@ void IOCtlSrc::SetSpindleSpeed(bool restore_defaults) const
 	CDROM_SET_SPEED s{CdromSetSpeed, speed, speed, CdromDefaultRotation};
 
 	DWORD unused;
-	DeviceIoControl(m_device, IOCTL_CDROM_SET_SPEED, &s, sizeof(s),
-			nullptr, 0, &unused, nullptr);
+	if (DeviceIoControl(m_device, IOCTL_CDROM_SET_SPEED, &s, sizeof(s),
+						nullptr, 0, &unused, nullptr))
+	{
+		if (!restore_defaults)
+			printf(" * CDVD: setSpindleSpeed success (%uKB/s)\n", speed);
+	}
+	else
+	{
+		printf(" * CDVD: setSpindleSpeed failed!\n");
+	}
 }
 
 u32 IOCtlSrc::GetSectorCount() const
@@ -113,13 +122,26 @@ bool IOCtlSrc::ReadSectors2048(u32 sector, u32 count, u8* buffer) const
 	offset.QuadPart = sector * 2048ULL;
 
 	if (!SetFilePointerEx(m_device, offset, nullptr, FILE_BEGIN))
+	{
+		fprintf(stderr, " * CDVD SetFilePointerEx failed: sector %u: error %u\n",
+				sector, GetLastError());
 		return false;
+	}
 
 	const DWORD bytes_to_read = 2048 * count;
 	DWORD bytes_read;
 	if (ReadFile(m_device, buffer, bytes_to_read, &bytes_read, nullptr))
+	{
 		if (bytes_read == bytes_to_read)
 			return true;
+		fprintf(stderr, " * CDVD ReadFile: sectors %u-%u: %u bytes read, %u bytes expected\n",
+				sector, sector + count - 1, bytes_read, bytes_to_read);
+	}
+	else
+	{
+		fprintf(stderr, " * CDVD ReadFile failed: sectors %u-%u: error %u\n",
+				sector, sector + count - 1, GetLastError());
+	}
 
 	return false;
 }
@@ -155,22 +177,26 @@ bool IOCtlSrc::ReadSectors2352(u32 sector, u32 count, u8* buffer) const
 	// types in the same read (which will fail).
 	for (u32 n = 0; n < count; ++n)
 	{
-		u32 current_sector           = sector + n;
-		sptd.info.Cdb[2]             = (current_sector >> 24) & 0xFF;
-		sptd.info.Cdb[3]             = (current_sector >> 16) & 0xFF;
-		sptd.info.Cdb[4]             = (current_sector >> 8) & 0xFF;
-		sptd.info.Cdb[5]             = current_sector & 0xFF;
+		u32 current_sector = sector + n;
+		sptd.info.Cdb[2] = (current_sector >> 24) & 0xFF;
+		sptd.info.Cdb[3] = (current_sector >> 16) & 0xFF;
+		sptd.info.Cdb[4] = (current_sector >> 8) & 0xFF;
+		sptd.info.Cdb[5] = current_sector & 0xFF;
 		sptd.info.DataTransferLength = 2352;
-		sptd.info.DataBuffer         = buffer + 2352 * n;
-		sptd.info.SenseInfoLength    = sizeof(sptd.sense_buffer);
+		sptd.info.DataBuffer = buffer + 2352 * n;
+		sptd.info.SenseInfoLength = sizeof(sptd.sense_buffer);
 
 		DWORD unused;
 		if (DeviceIoControl(m_device, IOCTL_SCSI_PASS_THROUGH_DIRECT, &sptd,
-					sizeof(sptd), &sptd, sizeof(sptd), &unused, nullptr))
+							sizeof(sptd), &sptd, sizeof(sptd), &unused, nullptr))
 		{
 			if (sptd.info.DataTransferLength == 2352)
 				continue;
 		}
+		printf(" * CDVD: SPTI failed reading sector %u; SENSE %u -", current_sector, sptd.info.SenseInfoLength);
+		for (const auto& c : sptd.sense_buffer)
+			printf(" %02X", c);
+		putchar('\n');
 		return false;
 	}
 
@@ -186,12 +212,28 @@ bool IOCtlSrc::ReadDVDInfo()
 	// least 18 bytes of the layer descriptor or else the ioctl will fail. The
 	// media specific information seems to be empty, so there's no point reading
 	// any more than that.
-	std::array<u8, 22> buffer;
+	
+	// UPDATE 15 Jan 2021
+	// Okay so some drives seem to have descriptors BIGGER than 22 bytes!
+	// This causes the read to fail with INVALID_PARAMETER.
+	// So lets just give it 32 bytes to play with, it seems happy enough with that.
+	// Refraction
+	std::array<u8, 32> buffer;
 	DVD_READ_STRUCTURE dvdrs{{0}, DvdPhysicalDescriptor, 0, 0};
 
 	if (!DeviceIoControl(m_device, IOCTL_DVD_READ_STRUCTURE, &dvdrs, sizeof(dvdrs),
 						 buffer.data(), buffer.size(), &unused, nullptr))
+	{
+		if ((GetLastError() == ERROR_INVALID_FUNCTION) || (GetLastError() == ERROR_NOT_SUPPORTED))
+		{
+			Console.Warning("IOCTL_DVD_READ_STRUCTURE not supported");
+		}
+		else if(GetLastError() != ERROR_UNRECOGNIZED_MEDIA) // ERROR_UNRECOGNIZED_MEDIA means probably a CD or no disc
+		{
+			Console.Warning("IOCTL Unknown Error %d", GetLastError());
+		}
 		return false;
+	}
 
 	auto& layer = *reinterpret_cast<DVD_LAYER_DESCRIPTOR*>(
 		reinterpret_cast<DVD_DESCRIPTOR_HEADER*>(buffer.data())->Data);

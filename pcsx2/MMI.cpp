@@ -16,7 +16,7 @@
 
 #include "PrecompiledHeader.h"
 #include "Common.h"
-#include "Utilities/MathUtils.h"
+#include "common/MathUtils.h"
 
 namespace R5900 {
 namespace Interpreter {
@@ -1005,14 +1005,31 @@ void QFSRV() {				// JayteeMaster: changed a bit to avoid screw up
 	if (sa_amt == 0) {
 		cpuRegs.GPR.r[_Rd_].UD[0] = cpuRegs.GPR.r[_Rt_].UD[0];
 		cpuRegs.GPR.r[_Rd_].UD[1] = cpuRegs.GPR.r[_Rt_].UD[1];
+		//saZero++;
+		//if( saZero >= 388800 )
+			//Console.WriteLn( "SA Is Zero, Bitch: %d zeros and counting.", saZero );
 	} else {
+		//Console.WriteLn( "SA Properly Valued at: %d (after %d zeros)", sa_amt, saZero );
+		//saZero = 0;
 		if (sa_amt < 64) {
+			/*
+			cpuRegs.GPR.r[_Rd_].UD[0] = cpuRegs.GPR.r[_Rt_].UD[0] >> sa_amt;
+			cpuRegs.GPR.r[_Rd_].UD[1] = cpuRegs.GPR.r[_Rt_].UD[1] >> sa_amt;
+			cpuRegs.GPR.r[_Rd_].UD[0]|= cpuRegs.GPR.r[_Rt_].UD[1] << (64 - sa_amt);
+			cpuRegs.GPR.r[_Rd_].UD[1]|= cpuRegs.GPR.r[_Rs_].UD[0] << (64 - sa_amt);
+			*/
 			Rd.UD[0] = cpuRegs.GPR.r[_Rt_].UD[0] >> sa_amt;
 			Rd.UD[1] = cpuRegs.GPR.r[_Rt_].UD[1] >> sa_amt;
 			Rd.UD[0]|= cpuRegs.GPR.r[_Rt_].UD[1] << (64 - sa_amt);
 			Rd.UD[1]|= cpuRegs.GPR.r[_Rs_].UD[0] << (64 - sa_amt);
 			cpuRegs.GPR.r[_Rd_] = Rd;
 		} else {
+			/*
+			cpuRegs.GPR.r[_Rd_].UD[0] = cpuRegs.GPR.r[_Rt_].UD[1] >> (sa_amt - 64);
+			cpuRegs.GPR.r[_Rd_].UD[1] = cpuRegs.GPR.r[_Rs_].UD[0] >> (sa_amt - 64);
+			cpuRegs.GPR.r[_Rd_].UD[0]|= cpuRegs.GPR.r[_Rs_].UD[0] << (128 - sa_amt);
+			cpuRegs.GPR.r[_Rd_].UD[1]|= cpuRegs.GPR.r[_Rs_].UD[1] << (128 - sa_amt);
+			*/
 			Rd.UD[0] = cpuRegs.GPR.r[_Rt_].UD[1] >> (sa_amt - 64);
 			Rd.UD[1] = cpuRegs.GPR.r[_Rs_].UD[0] >> (sa_amt - 64);
 			if (sa_amt != 64) {
@@ -1035,7 +1052,7 @@ static __fi void _PMADDW(int dd, int ss)
 	s64 temp = ((s64)cpuRegs.GPR.r[_Rs_].SL[ss] * (s64)cpuRegs.GPR.r[_Rt_].SL[ss]);
 	s64 temp2 = temp + ((s64)cpuRegs.HI.SL[ss] << 32);
 
-	//Playstation 2 division voodoo, for some reason only the lower half is affected
+	//PlayStation 2 division voodoo, for some reason only the lower half is affected
 	if (ss == 0)
 	{
 		if (((cpuRegs.GPR.r[_Rt_].SL[ss] & 0x7FFFFFFF) == 0 || (cpuRegs.GPR.r[_Rt_].SL[ss] & 0x7FFFFFFF) == 0x7FFFFFFF) &&

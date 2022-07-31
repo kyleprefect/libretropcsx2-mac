@@ -18,6 +18,10 @@
 // for compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #include "wx/convauto.h"
 
 // we use latin1 by default as it seems the least bad choice: the files we need
@@ -44,7 +48,32 @@ const char BOM_UTF8[]    = { '\xEF', '\xBB', '\xBF'         };
 /* static */
 void wxConvAuto::SetFallbackEncoding(wxFontEncoding enc)
 {
+    wxASSERT_MSG( enc != wxFONTENCODING_DEFAULT,
+                  wxT("wxFONTENCODING_DEFAULT doesn't make sense here") );
+
     ms_defaultMBEncoding = enc;
+}
+
+/* static */
+const char* wxConvAuto::GetBOMChars(wxBOM bom, size_t* count)
+{
+    wxCHECK_MSG( count , NULL, wxS("count pointer must be provided") );
+
+    switch ( bom )
+    {
+        case wxBOM_UTF32BE: *count = WXSIZEOF(BOM_UTF32BE); return BOM_UTF32BE;
+        case wxBOM_UTF32LE: *count = WXSIZEOF(BOM_UTF32LE); return BOM_UTF32LE;
+        case wxBOM_UTF16BE: *count = WXSIZEOF(BOM_UTF16BE); return BOM_UTF16BE;
+        case wxBOM_UTF16LE: *count = WXSIZEOF(BOM_UTF16LE); return BOM_UTF16LE;
+        case wxBOM_UTF8   : *count = WXSIZEOF(BOM_UTF8   ); return BOM_UTF8;
+        case wxBOM_Unknown:
+        case wxBOM_None:
+            wxFAIL_MSG( wxS("Invalid BOM type") );
+            return NULL;
+    }
+
+    wxFAIL_MSG( wxS("Unknown BOM type") );
+    return NULL;
 }
 
 /* static */
@@ -144,7 +173,7 @@ void wxConvAuto::InitFromBOM(wxBOM bomType)
     switch ( bomType )
     {
         case wxBOM_Unknown:
-            // shouldn't be called for this BOM type
+            wxFAIL_MSG( "shouldn't be called for this BOM type" );
             break;
 
         case wxBOM_None:
@@ -176,8 +205,7 @@ void wxConvAuto::InitFromBOM(wxBOM bomType)
             break;
 
         default:
-            // unknown BOM type
-            break;
+            wxFAIL_MSG( "unknown BOM type" );
     }
 
     if ( !m_conv )
@@ -196,7 +224,7 @@ void wxConvAuto::SkipBOM(const char **src, size_t *len) const
     switch ( m_bomType )
     {
         case wxBOM_Unknown:
-            // shouldn't be called for this BOM type
+            wxFAIL_MSG( "shouldn't be called for this BOM type" );
             return;
 
         case wxBOM_None:
@@ -218,6 +246,7 @@ void wxConvAuto::SkipBOM(const char **src, size_t *len) const
             break;
 
         default:
+            wxFAIL_MSG( "unknown BOM type" );
             return;
     }
 

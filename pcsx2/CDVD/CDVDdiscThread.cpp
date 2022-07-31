@@ -15,6 +15,7 @@
 
 #include "PrecompiledHeader.h"
 #include "CDVDdiscReader.h"
+#include "CDVD/CDVD.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -96,14 +97,17 @@ bool cdvdCacheFetch(u32 lsn, u8* data)
 		memcpy(data, Cache[entry].data, 2352 * sectors_per_read);
 		return true;
 	}
+	//printf("NOT IN CACHE\n");
 	return false;
 }
 
-void cdvdCacheReset(void)
+void cdvdCacheReset()
 {
 	std::lock_guard<std::mutex> guard(s_cache_lock);
 	for (u32 i = 0; i < CacheSize; i++)
+	{
 		Cache[i].lsn = std::numeric_limits<u32>::max();
+	}
 }
 
 bool cdvdReadBlockOfSectors(u32 sector, u8* data)
@@ -129,14 +133,14 @@ bool cdvdReadBlockOfSectors(u32 sector, u8* data)
 	return false;
 }
 
-void cdvdCallNewDiscCB(void)
+void cdvdCallNewDiscCB()
 {
 	weAreInNewDiskCB = true;
 	newDiscCB();
 	weAreInNewDiskCB = false;
 }
 
-bool cdvdUpdateDiscStatus(void)
+bool cdvdUpdateDiscStatus()
 {
 	bool ready = src->DiscReady();
 
@@ -171,11 +175,12 @@ bool cdvdUpdateDiscStatus(void)
 	return !ready;
 }
 
-void cdvdThread(void)
+void cdvdThread()
 {
 	u8 buffer[2352 * sectors_per_read];
 	u32 prefetches_left = 0;
 
+	printf(" * CDVD: IO thread started...\n");
 	std::unique_lock<std::mutex> guard(s_notify_lock);
 
 	while (cdvd_is_open)
@@ -224,7 +229,9 @@ void cdvdThread(void)
 		if (!cdvdCacheCheck(request_lsn))
 		{
 			if (cdvdReadBlockOfSectors(request_lsn, buffer))
+			{
 				cdvdCacheUpdate(request_lsn, buffer);
+			}
 			else
 			{
 				// If the read fails, further reads are likely to fail too.
@@ -241,7 +248,9 @@ void cdvdThread(void)
 		// Prefetch
 		u32 next_prefetch_lsn = g_last_sector_block_lsn + sectors_per_read;
 		if (next_prefetch_lsn >= src->GetSectorCount())
+		{
 			prefetches_left = 0;
+		}
 		else
 		{
 			const u32 max_prefetches = 16;
@@ -249,6 +258,7 @@ void cdvdThread(void)
 			prefetches_left = std::min((remaining + sectors_per_read - 1) / sectors_per_read, max_prefetches);
 		}
 	}
+	printf(" * CDVD: IO thread finished.\n");
 }
 
 bool cdvdStartThread()
@@ -386,13 +396,15 @@ s32 cdvdDirectReadSector(u32 sector, s32 mode, u8* buffer)
 	}
 }
 
-s32 cdvdGetMediaType(void)
+s32 cdvdGetMediaType()
 {
 	return src->GetMediaType();
 }
 
-s32 cdvdRefreshData(void)
+s32 cdvdRefreshData()
 {
+	const char* diskTypeName = "Unknown";
+
 	//read TOC from device
 	cdvdParseTOC();
 
@@ -413,6 +425,24 @@ s32 cdvdRefreshData(void)
 	}
 
 	curTrayStatus = CDVD_TRAY_CLOSE;
+
+	switch (curDiskType)
+	{
+		case CDVD_TYPE_DETCTDVDD:
+			diskTypeName = "Double-Layer DVD";
+			break;
+		case CDVD_TYPE_DETCTDVDS:
+			diskTypeName = "Single-Layer DVD";
+			break;
+		case CDVD_TYPE_DETCTCD:
+			diskTypeName = "CD-ROM";
+			break;
+		case CDVD_TYPE_NODISC:
+			diskTypeName = "No Disc";
+			break;
+	}
+
+	printf(" * CDVD: Disk Type: %s\n", diskTypeName);
 
 	cdvdCacheReset();
 

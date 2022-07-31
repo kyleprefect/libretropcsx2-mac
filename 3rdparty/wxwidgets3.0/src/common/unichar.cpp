@@ -14,8 +14,13 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #ifndef WX_PRECOMP
     #include "wx/strconv.h"  // wxConvLibc
+    #include "wx/log.h"
 #endif
 
 #include "wx/unichar.h"
@@ -33,6 +38,7 @@
 wxUniChar::value_type wxUniChar::FromHi8bit(char c)
 {
 #if wxUSE_UTF8_LOCALE_ONLY
+    wxFAIL_MSG( "invalid UTF-8 character" );
     wxUnusedVar(c);
 
     return wxT('?'); // FIXME-UTF8: what to use as failure character?
@@ -42,7 +48,10 @@ wxUniChar::value_type wxUniChar::FromHi8bit(char c)
     cbuf[1] = '\0';
     wchar_t wbuf[2];
     if ( wxConvLibc.ToWChar(wbuf, 2, cbuf, 2) != 2 )
+    {
+        wxFAIL_MSG( "invalid multibyte character" );
         return wxT('?'); // FIXME-UTF8: what to use as failure character?
+    }
     return wbuf[0];
 #endif
 }
@@ -52,7 +61,11 @@ char wxUniChar::ToHi8bit(wxUniChar::value_type v)
 {
     char c;
     if ( !GetAsHi8bit(v, &c) )
+    {
+        wxFAIL_MSG( "character cannot be converted to single byte" );
         c = '?'; // FIXME-UTF8: what to use as failure character?
+    }
+
     return c;
 }
 
@@ -117,8 +130,12 @@ wxUniCharRef& wxUniCharRef::operator=(const wxUniChar& c)
         wxStringIteratorNode *it;
         for ( it = m_str.m_iterators.ptr; it; it = it->m_next, ++iterNum )
         {
+            wxASSERT( it->m_iter || it->m_citer );
+
             if ( iterNum == STATIC_SIZE )
             {
+                wxLogTrace( wxT("utf8"), wxT("unexpectedly many iterators") );
+
                 size_t total = iterNum + 1;
                 for ( wxStringIteratorNode *it2 = it; it2; it2 = it2->m_next )
                     total++;
@@ -148,6 +165,9 @@ wxUniCharRef& wxUniCharRef::operator=(const wxUniChar& c)
         size_t i;
         for ( i = 0, it = m_str.m_iterators.ptr; it; it = it->m_next, ++i )
         {
+            wxASSERT( i < iterNum );
+            wxASSERT( it->m_iter || it->m_citer );
+
             if ( it->m_iter )
                 *it->m_iter = strimpl.begin() + indexes[i];
             else // it->m_citer

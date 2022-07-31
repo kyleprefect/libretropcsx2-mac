@@ -26,12 +26,11 @@
 #define spu2Rs16(mmem) (*(s16*)((s8*)spu2regs + ((mmem)&0x1fff)))
 #define spu2Ru16(mmem) (*(u16*)((s8*)spu2regs + ((mmem)&0x1fff)))
 
-extern s16* spu2regs;
-extern s16* _spu2mem;
-#define GETMEMPTR(addr) ((_spu2mem) + (addr))
-
 extern s16* GetMemPtr(u32 addr);
+extern s16 spu2M_Read(u32 addr);
 extern void spu2M_Write(u32 addr, s16 value);
+extern void spu2M_Write(u32 addr, u16 value);
+
 
 struct V_VolumeLR
 {
@@ -46,6 +45,8 @@ struct V_VolumeLR
 		, Right(both)
 	{
 	}
+
+	void DebugDump(FILE* dump, const char* title);
 };
 
 struct V_VolumeSlide
@@ -67,7 +68,10 @@ public:
 		, Mode(0)
 	{
 	}
+
 	void Update();
+	void RegSet(u16 src); // used to set the volume from a register source (16 bit signed)
+	void DebugDump(FILE* dump, const char* title, const char* nameLR);
 };
 
 struct V_VolumeSlideLR
@@ -90,6 +94,8 @@ public:
 		Left.Update();
 		Right.Update();
 	}
+
+	void DebugDump(FILE* dump, const char* title);
 };
 
 struct V_ADSR
@@ -130,6 +136,10 @@ public:
 struct V_Voice
 {
 	u32 PlayCycle; // SPU2 cycle where the Playing started
+	u32 LoopCycle; // SPU2 cycle where it last set its own Loop
+
+	u32 PendingLoopStartA;
+	bool PendingLoopStart;
 
 	V_VolumeSlideLR Volume;
 
@@ -183,9 +193,38 @@ struct V_Voice
 	s32 SCurrent;
 
 	// it takes a few ticks for voices to start on the real SPU2?
-	bool Start();
+	void Start();
 	void Stop();
 };
+
+// ** Begin Debug-only variables section **
+// Separated from the V_Voice struct to improve cache performance of
+// the Public Release build.
+struct V_VoiceDebug
+{
+	s8 FirstBlock;
+	s32 SampleData;
+	s32 PeakX;
+	s32 displayPeak;
+	s32 lastSetStartA;
+};
+
+struct V_CoreDebug
+{
+	V_VoiceDebug Voices[24];
+	// Last Transfer Size
+	u32 lastsize;
+
+	// draw adma waveform in the visual debugger
+	s32 admaWaveformL[0x100];
+	s32 admaWaveformR[0x100];
+
+	// Enabled when a dma write starts, disabled when the visual debugger showed it once
+	s32 dmaFlag;
+};
+
+// Debug tracking information - 24 voices and 2 cores.
+extern V_CoreDebug DebugCores[2];
 
 struct V_Reverb
 {
@@ -334,16 +373,16 @@ struct VoiceMixSet
 	}
 };
 
-#define NUM_VOICES 24
-
 struct V_Core
 {
+	static const uint NumVoices = 24;
+
 	u32 Index; // Core index identifier.
 
 	// Voice Gates -- These are SSE-related values, and must always be
 	// first to ensure 16 byte alignment
 
-	V_VoiceGates VoiceGates[NUM_VOICES];
+	V_VoiceGates VoiceGates[NumVoices];
 	V_CoreGates DryGate;
 	V_CoreGates WetGate;
 
@@ -352,10 +391,11 @@ struct V_Core
 	V_VolumeLR InpVol;         // Volume for Sound Data Input
 	V_VolumeLR FxVol;          // Volume for Output from Effects
 
-	V_Voice Voices[NUM_VOICES];
+	V_Voice Voices[NumVoices];
 
 	u32 IRQA; // Interrupt Address
 	u32 TSA;  // DMA Transfer Start Address
+	u32 ActiveTSA; // Active DMA TSA - Required for NFL 2k5 which overwrites it mid transfer
 
 	bool IRQEnable; // Interrupt Enable
 	bool FxEnable;  // Effect Enable
@@ -363,16 +403,23 @@ struct V_Core
 	bool AdmaInProgress;
 
 	s8 DMABits;        // DMA related?
-	s8 NoiseClk;       // Noise Clock
+	u8 NoiseClk;       // Noise Clock
+	u32 NoiseCnt;      // Noise Counter
+	u32 NoiseOut;      // Noise Output
 	u16 AutoDMACtrl;   // AutoDMA Status
 	s32 DMAICounter;   // DMA Interrupt Counter
+	u32 LastClock;     // DMA Interrupt Clock Cycle Counter
 	u32 InputDataLeft; // Input Buffer
-	u32 InputPosRead;
+	u32 InputDataTransferred; // Used for simulating MADR increase (GTA VC)
 	u32 InputPosWrite;
 	u32 InputDataProgress;
 
 	V_Reverb Revb;              // Reverb Registers
 	V_ReverbBuffers RevBuffers; // buffer pointers for reverb, pre-calculated and pre-clipped.
+
+	s32 RevbDownBuf[2][64]; // Downsample buffer for reverb, one for each channel
+	s32 RevbUpBuf[2][64]; // Upsample buffer for reverb, one for each channel
+	u32 RevbSampleBufPos;
 	u32 EffectsStartA;
 	u32 EffectsEndA;
 	u32 ExtEffectsStartA;
@@ -395,17 +442,26 @@ struct V_Core
 	u8 AttrBit0;
 	u8 DmaMode;
 
+	// new dma only
+	bool DmaStarted;
+	u32 AutoDmaFree;
+
+	// old dma only
 	u16* DMAPtr;
 	u16* DMARPtr; // Mem pointer for DMA Reads
 	u32 ReadSize;
 	bool IsDMARead;
-	u32 MADR;
-	u32 TADR;
 
 	u32 KeyOn; // not the KON register (though maybe it is)
 
 	// psxmode caches
 	u16 psxSoundDataTransferControl;
+	u16 psxSPUSTAT;
+
+	// HACK -- This is a temp buffer which is (or isn't?) used to circumvent some memory
+	// corruption that originates elsewhere. >_<  The actual ADMA buffer
+	// is an area mapped to SPU2 main memory.
+	//s16				ADMATempBuffer[0x1000];
 
 	// ----------------------------------------------------------------------------------
 	//  V_Core Methods
@@ -422,6 +478,7 @@ struct V_Core
 
 	void Init(int index);
 	void UpdateEffectsBufferSize();
+	void AnalyzeReverbPreset();
 
 	s32 EffectsBufferIndexer(s32 offset) const;
 
@@ -437,27 +494,46 @@ struct V_Core
 	StereoOut32 DoReverb(const StereoOut32& Input);
 	s32 RevbGetIndexer(s32 offset);
 
+	s32 ReverbDownsample(bool right);
+	StereoOut32 ReverbUpsample(bool phase);
+
 	StereoOut32 ReadInput();
 	StereoOut32 ReadInput_HiFi();
 
 	// --------------------------------------------------------------------------
 	//  DMA Section
 	// --------------------------------------------------------------------------
+
+	// Returns the index of the DMA channel (4 for Core 0, or 7 for Core 1)
+	int GetDmaIndex() const
+	{
+		return (Index == 0) ? 4 : 7;
+	}
+
+	// returns either '4' or '7'
+	char GetDmaIndexChar() const
+	{
+		return 0x30 + GetDmaIndex();
+	}
+
 	__forceinline u16 DmaRead()
 	{
-		u32 _addr     = TSA & 0xfffff;
-		const u16 ret = (u16)*GETMEMPTR(_addr);
-		++TSA;
-		TSA &= 0xfffff;
+		const u16 ret = (u16)spu2M_Read(ActiveTSA);
+		++ActiveTSA;
+		ActiveTSA &= 0xfffff;
+		TSA = ActiveTSA;
 		return ret;
 	}
 
 	__forceinline void DmaWrite(u16 value)
 	{
-		spu2M_Write(TSA, (s16)value);
-		++TSA;
-		TSA &= 0xfffff;
+		spu2M_Write(ActiveTSA, value);
+		++ActiveTSA;
+		ActiveTSA &= 0xfffff;
+		TSA = ActiveTSA;
 	}
+
+	void LogAutoDMA(FILE* fp);
 
 	void DoDMAwrite(u16* pMem, u32 size);
 	void DoDMAread(u16* pMem, u32 size);
@@ -466,30 +542,38 @@ struct V_Core
 	void AutoDMAReadBuffer(int mode);
 	void StartADMAWrite(u16* pMem, u32 sz);
 	void PlainDMAWrite(u16* pMem, u32 sz);
+	void FinishDMAwrite();
 };
 
 extern V_Core Cores[2];
 extern V_SPDIF Spdif;
 
 // Output Buffer Writing Position (the same for all data);
-extern s16 OutPos;
+extern u16 OutPos;
 // Input Buffer Reading Position (the same for all data);
-extern s16 InputPos;
+extern u16 InputPos;
 // SPU Mixing Cycles ("Ticks mixed" counter)
 extern u32 Cycles;
 
+extern s16* spu2regs;
+extern s16* _spu2mem;
 extern int PlayMode;
 
 extern void SetIrqCall(int core);
+extern void SetIrqCallDMA(int core);
+extern void StartVoices(int core, u32 value);
+extern void StopVoices(int core, u32 value);
 extern void InitADSR();
+extern void CalculateADSR(V_Voice& vc);
+extern void UpdateSpdifMode();
 
 namespace SPU2Savestate
 {
 	struct DataBlock;
 
-	extern s32 __fastcall FreezeIt(DataBlock& spud);
-	extern s32 __fastcall ThawIt(DataBlock& spud);
-	extern s32 __fastcall SizeIt();
+	extern s32 FreezeIt(DataBlock& spud);
+	extern s32 ThawIt(DataBlock& spud);
+	extern s32 SizeIt();
 } // namespace SPU2Savestate
 
 // --------------------------------------------------------------------------------------
@@ -499,7 +583,7 @@ namespace SPU2Savestate
 // The SPU2 has a dynamic memory range which is used for several internal operations, such as
 // registers, CORE 1/2 mixing, AutoDMAs, and some other fancy stuff.  We exclude this range
 // from the cache here:
-#define SPU2_DYN_MEMLINE 0x2800
+static const s32 SPU2_DYN_MEMLINE = 0x2800;
 
 // 8 short words per encoded PCM block. (as stored in SPU2 ram)
 static const int pcm_WordsPerBlock = 8;
@@ -514,6 +598,8 @@ struct PcmCacheEntry
 {
 	bool Validated;
 	s16 Sampledata[pcm_DecodedSamplesPerBlock];
+	s32 Prev1;
+	s32 Prev2;
 };
 
 extern PcmCacheEntry* pcm_cache_data;

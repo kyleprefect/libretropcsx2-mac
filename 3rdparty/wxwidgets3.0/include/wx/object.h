@@ -53,6 +53,7 @@ class WXDLLIMPEXP_BASE const_iterator                                    \
 // only one of the RTTI system will be compiled:
 // - the "old" one (defined by rtti.h) or
 // - the "new" one (defined by xti.h)
+#include "wx/xti.h"
 #include "wx/rtti.h"
 
 #define wxIMPLEMENT_CLASS(name, basename)                                     \
@@ -156,6 +157,7 @@ name##PluginSentinel  m_pluginsentinel
 template <class T>
 inline T *wxCheckCast(const void *ptr, T * = NULL)
 {
+    wxASSERT_MSG( wxDynamicCast(ptr, T), "wxStaticCast() used incorrectly" );
     return const_cast<T *>(static_cast<const T *>(ptr));
 }
 
@@ -176,6 +178,42 @@ inline T *wxCheckCast(const void *ptr, T * = NULL)
     _WX_WANT_ARRAY_DELETE_VOID                = void operator delete[] (void *buf)
     _WX_WANT_ARRAY_DELETE_VOID_WXCHAR_INT     = void operator delete[] (void* buf, wxChar*, int )
 */
+
+#if wxUSE_MEMORY_TRACING
+
+// All compilers get this one
+#define _WX_WANT_NEW_SIZET_WXCHAR_INT
+
+// Everyone except Visage gets the next one
+#ifndef __VISAGECPP__
+    #define _WX_WANT_DELETE_VOID
+#endif
+
+// Only visage gets this one under the correct circumstances
+#if defined(__VISAGECPP__) && __DEBUG_ALLOC__
+    #define _WX_WANT_DELETE_VOID_CONSTCHAR_SIZET
+#endif
+
+// Only VC++ 6 gets overloaded delete that matches new
+#if (defined(__VISUALC__) && (__VISUALC__ >= 1200))
+    #define _WX_WANT_DELETE_VOID_WXCHAR_INT
+#endif
+
+// Now see who (if anyone) gets the array memory operators
+#if wxUSE_ARRAY_MEMORY_OPERATORS
+
+    // Everyone except Visual C++ (cause problems for VC++ - crashes)
+    #if !defined(__VISUALC__)
+        #define _WX_WANT_ARRAY_NEW_SIZET_WXCHAR_INT
+    #endif
+
+    // Everyone except Visual C++ (cause problems for VC++ - crashes)
+    #if !defined(__VISUALC__)
+        #define _WX_WANT_ARRAY_DELETE_VOID
+    #endif
+#endif // wxUSE_ARRAY_MEMORY_OPERATORS
+
+#endif // wxUSE_MEMORY_TRACING
 
 // ----------------------------------------------------------------------------
 // Compatibility macro aliases DECLARE group
@@ -205,6 +243,8 @@ class WXDLLIMPEXP_BASE wxRefCounter
 public:
     wxRefCounter() { m_count = 1; }
 
+    int GetRefCount() const { return m_count; }
+
     void IncRef() { m_count++; }
     void DecRef();
 
@@ -229,6 +269,84 @@ private:
 // ----------------------------------------------------------------------------
 
 typedef wxRefCounter wxObjectRefData;
+
+// ----------------------------------------------------------------------------
+// wxObjectDataPtr: helper class to avoid memleaks because of missing calls
+//                  to wxObjectRefData::DecRef
+// ----------------------------------------------------------------------------
+
+template <class T>
+class wxObjectDataPtr
+{
+public:
+    typedef T element_type;
+
+    wxEXPLICIT wxObjectDataPtr(T *ptr = NULL) : m_ptr(ptr) {}
+
+    // copy ctor
+    wxObjectDataPtr(const wxObjectDataPtr<T> &tocopy)
+        : m_ptr(tocopy.m_ptr)
+    {
+        if (m_ptr)
+            m_ptr->IncRef();
+    }
+
+    ~wxObjectDataPtr()
+    {
+        if (m_ptr)
+            m_ptr->DecRef();
+    }
+
+    T *get() const { return m_ptr; }
+
+    // test for pointer validity: defining conversion to unspecified_bool_type
+    // and not more obvious bool to avoid implicit conversions to integer types
+    typedef T *(wxObjectDataPtr<T>::*unspecified_bool_type)() const;
+    operator unspecified_bool_type() const
+    {
+        return m_ptr ? &wxObjectDataPtr<T>::get : NULL;
+    }
+
+    T& operator*() const
+    {
+        wxASSERT(m_ptr != NULL);
+        return *(m_ptr);
+    }
+
+    T *operator->() const
+    {
+        wxASSERT(m_ptr != NULL);
+        return get();
+    }
+
+    void reset(T *ptr)
+    {
+        if (m_ptr)
+            m_ptr->DecRef();
+        m_ptr = ptr;
+    }
+
+    wxObjectDataPtr& operator=(const wxObjectDataPtr &tocopy)
+    {
+        if (m_ptr)
+            m_ptr->DecRef();
+        m_ptr = tocopy.m_ptr;
+        if (m_ptr)
+            m_ptr->IncRef();
+        return *this;
+    }
+
+    wxObjectDataPtr& operator=(T *ptr)
+    {
+        if (m_ptr)
+            m_ptr->DecRef();
+        m_ptr = ptr;
+        return *this;
+    }
+
+private:
+    T *m_ptr;
+};
 
 // ----------------------------------------------------------------------------
 // wxObject: the root class of wxWidgets object hierarchy
@@ -293,18 +411,36 @@ public:
 
     // ref counted data handling methods
 
+    // get/set
+    wxObjectRefData *GetRefData() const { return m_refData; }
+    void SetRefData(wxObjectRefData *data) { m_refData = data; }
+
     // make a 'clone' of the object
     void Ref(const wxObject& clone);
 
     // destroy a reference
     void UnRef();
 
+    // Make sure this object has only one reference
+    void UnShare() { AllocExclusive(); }
+
     // check if this object references the same data as the other one
     bool IsSameAs(const wxObject& o) const { return m_refData == o.m_refData; }
 
 protected:
+    // ensure that our data is not shared with anybody else: if we have no
+    // data, it is created using CreateRefData() below, if we have shared data
+    // it is copied using CloneRefData(), otherwise nothing is done
+    void AllocExclusive();
+
     // both methods must be implemented if AllocExclusive() is used, not pure
     // virtual only because of the backwards compatibility reasons
+
+    // create a new m_refData
+    virtual wxObjectRefData *CreateRefData() const;
+
+    // create a new m_refData initialized with the given one
+    virtual wxObjectRefData *CloneRefData(const wxObjectRefData *data) const;
 
     wxObjectRefData *m_refData;
 };
@@ -313,6 +449,24 @@ inline wxObject *wxCheckDynamicCast(wxObject *obj, wxClassInfo *classInfo)
 {
     return obj && obj->GetClassInfo()->IsKindOf(classInfo) ? obj : NULL;
 }
+
+#include "wx/xti2.h"
+
+// ----------------------------------------------------------------------------
+// more debugging macros
+// ----------------------------------------------------------------------------
+
+#if wxUSE_DEBUG_NEW_ALWAYS
+    #define WXDEBUG_NEW new(__TFILE__,__LINE__)
+
+    #if wxUSE_GLOBAL_MEMORY_OPERATORS
+        #define new WXDEBUG_NEW
+    #elif defined(__VISUALC__)
+        // Including this file redefines new and allows leak reports to
+        // contain line numbers
+        #include "wx/msw/msvcrt.h"
+    #endif
+#endif // wxUSE_DEBUG_NEW_ALWAYS
 
 // ----------------------------------------------------------------------------
 // Compatibility macro aliases IMPLEMENT group

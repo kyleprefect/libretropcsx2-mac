@@ -40,7 +40,7 @@
 
 // define _WIN32_WINNT and _WIN32_IE to the highest possible values because we
 // always check for the version of installed DLLs at runtime anyway (see
-// wxApp::GetComCtl32Version()) unless the user really
+// wxGetWinVersion() and wxApp::GetComCtl32Version()) unless the user really
 // doesn't want to use APIs only available on later OS versions and had defined
 // them to (presumably lower) values
 #ifndef _WIN32_WINNT
@@ -51,6 +51,11 @@
     #define _WIN32_IE 0x0700
 #endif
 
+/* Deal with clash with __WINDOWS__ include guard */
+#if defined(__WXWINCE__) && defined(__WINDOWS__)
+#undef __WINDOWS__
+#endif
+
 // For IPv6 support, we must include winsock2.h before winsock.h, and
 // windows.h include winsock.h so do it before including it
 #if wxUSE_IPV6
@@ -58,6 +63,10 @@
 #endif
 
 #include <windows.h>
+
+#if defined(__WXWINCE__) && !defined(__WINDOWS__)
+#define __WINDOWS__
+#endif
 
 // #undef the macros defined in winsows.h which conflict with code elsewhere
 #include "wx/msw/winundef.h"
@@ -76,4 +85,32 @@
     #define DWORD_PTR unsigned long
 #endif // !defined(_MSC_VER) || _MSC_VER < 1300
 
+// ----------------------------------------------------------------------------
+// Fix the functions wrongly implemented in unicows.dll
+// ----------------------------------------------------------------------------
+
+#if wxUSE_UNICODE_MSLU
+
+#if wxUSE_GUI
+
+WXDLLIMPEXP_CORE int wxMSLU_DrawStateW(WXHDC dc, WXHBRUSH br, WXFARPROC outputFunc,
+                                  WXLPARAM lData, WXWPARAM wData,
+                                  int x, int y, int cx, int cy,
+                                  unsigned int flags);
+#define DrawStateW(dc, br, func, ld, wd, x, y, cx, cy, flags) \
+    wxMSLU_DrawStateW((WXHDC)dc,(WXHBRUSH)br,(WXFARPROC)func, \
+                      ld, wd, x, y, cx, cy, flags)
+
+WXDLLIMPEXP_CORE int wxMSLU_GetOpenFileNameW(void *ofn);
+#define GetOpenFileNameW(ofn) wxMSLU_GetOpenFileNameW((void*)ofn)
+
+WXDLLIMPEXP_CORE int wxMSLU_GetSaveFileNameW(void *ofn);
+#define GetSaveFileNameW(ofn) wxMSLU_GetSaveFileNameW((void*)ofn)
+
+#endif // wxUSE_GUI
+
+#endif // wxUSE_UNICODE_MSLU
+
 #endif // _WX_WRAPWIN_H_
+
+

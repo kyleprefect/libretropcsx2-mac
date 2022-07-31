@@ -22,6 +22,8 @@ template <class T>
 class wxScopedArray
 {
 public:
+    typedef T element_type;
+
     wxEXPLICIT wxScopedArray(T * array = NULL) : m_array(array) { }
 
     ~wxScopedArray() { delete [] m_array; }
@@ -82,6 +84,8 @@ public:                             \
                                     \
     T & operator[](long int i) const\
     {                               \
+        wxASSERT(m_ptr != NULL);    \
+        wxASSERT(i >= 0);           \
         return m_ptr[i];            \
     }                               \
                                     \

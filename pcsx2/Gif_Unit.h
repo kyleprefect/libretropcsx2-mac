@@ -15,34 +15,25 @@
 
 #pragma once
 #include <deque>
-#include "System/SysThreads.h"
 #include "Gif.h"
 #include "Vif.h"
 #include "GS.h"
+#include "GS/GSRegs.h"
 
- // FIXME common path ?
-#include "Utilities/boost_spsc_queue.hpp"
-
-#if !defined(_M_SSE)
-#if defined(__GNUC__)
-#if defined(__SSE2__)
-#define _M_SSE 0x200
-#endif
-#endif
-
-#if !defined(_M_SSE) && (!defined(_WIN32) || defined(_M_AMD64) || defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-#define _M_SSE 0x200
-#endif
-#endif
+// FIXME common path ?
+#include "common/boost_spsc_queue.hpp"
 
 struct GS_Packet;
 extern void Gif_MTGS_Wait(bool isMTVU);
-extern void Gif_FinishIRQ(void);
+extern void Gif_FinishIRQ();
 extern bool Gif_HandlerAD(u8* pMem);
 extern bool Gif_HandlerAD_MTVU(u8* pMem);
+extern bool Gif_HandlerAD_Debug(u8* pMem);
 extern void Gif_AddBlankGSPacket(u32 size, GIF_PATH path);
 extern void Gif_AddGSPacketMTVU(GS_Packet& gsPack, GIF_PATH path);
 extern void Gif_AddCompletedGSPacket(GS_Packet& gsPack, GIF_PATH path);
+extern void Gif_ParsePacket(u8* data, u32 size, GIF_PATH path);
+extern void Gif_ParsePacket(GS_Packet& gsPack, GIF_PATH path);
 
 struct Gif_Tag
 {
@@ -92,41 +83,40 @@ struct Gif_Tag
 
 	__ri void setTag(u8* pMem, bool analyze = false)
 	{
-		tag     = *(HW_Gif_Tag*)pMem;
-		nLoop   = tag.NLOOP;
-		hasAD   = false;
+		tag = *(HW_Gif_Tag*)pMem;
+		nLoop = tag.NLOOP;
+		hasAD = false;
 		nRegIdx = 0;
 		isValid = 1;
-		len     = 0; // avoid uninitialized compiler warning
+		len = 0; // avoid uninitialized compiler warning
 		switch (tag.FLG)
 		{
-		case GIF_FLG_PACKED:
-			nRegs = ((tag.NREG - 1) & 0xf) + 1;
-			len = (nRegs * tag.NLOOP) * 16;
-			cycles = len << 1; // Packed Mode takes 2 ee-cycles
-			if (analyze)
-				analyzeTag();
-			break;
-		case GIF_FLG_REGLIST:
-			nRegs = ((tag.NREG - 1) & 0xf) + 1;
-			len = ((nRegs * tag.NLOOP + 1) >> 1) * 16;
-			cycles = len << 2; // Reg-list Mode takes 4 ee-cycles
-			break;
-		case GIF_FLG_IMAGE:
-		case GIF_FLG_IMAGE2:
-			nRegs = 0;
-			len = tag.NLOOP * 16;
-			cycles = len << 2; // Image Mode takes 4 ee-cycles
-			tag.FLG = GIF_FLG_IMAGE;
-			break;
-		default:
-			break;
+			case GIF_FLG_PACKED:
+				nRegs = ((tag.NREG - 1) & 0xf) + 1;
+				len = (nRegs * tag.NLOOP) * 16;
+				cycles = len << 1; // Packed Mode takes 2 ee-cycles
+				if (analyze)
+					analyzeTag();
+				break;
+			case GIF_FLG_REGLIST:
+				nRegs = ((tag.NREG - 1) & 0xf) + 1;
+				len = ((nRegs * tag.NLOOP + 1) >> 1) * 16;
+				cycles = len << 2; // Reg-list Mode takes 4 ee-cycles
+				break;
+			case GIF_FLG_IMAGE:
+			case GIF_FLG_IMAGE2:
+				nRegs = 0;
+				len = tag.NLOOP * 16;
+				cycles = len << 2; // Image Mode takes 4 ee-cycles
+				tag.FLG = GIF_FLG_IMAGE;
+				break;
+				jNO_DEFAULT;
 		}
 	}
 
-	__ri void analyzeTag(void)
+	__ri void analyzeTag()
 	{
-#if _M_SSE >= 0x200
+#ifdef _M_X86
 		// zero out bits for registers which shouldn't be tested
 		__m128i vregs = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(tag.REGS));
 		vregs = _mm_and_si128(vregs, _mm_srli_epi64(_mm_set1_epi32(0xFFFFFFFFu), (64 - nRegs * 4)));
@@ -247,7 +237,10 @@ struct Gif_Path
 		if (softReset)
 		{
 			if (!isMTVU()) // MTVU Freaks out if you try to reset it, so let's just let it transfer
+			{
+				GUNIT_WARN("Gif Path %d - Soft Reset", idx + 1);
 				curSize = curOffset;
+			}
 			return;
 		}
 		mtvu.Reset();
@@ -263,10 +256,24 @@ struct Gif_Path
 	bool hasDataRemaining() const { return curOffset < curSize; }
 	bool isDone() const { return isMTVU() ? !mtvu.fakePackets : (!hasDataRemaining() && (state == GIF_PATH_IDLE || state == GIF_PATH_WAIT)); }
 
+	// Waits on the MTGS to process gs packets
+	void mtgsReadWait()
+	{
+		if (IsDevBuild)
+		{
+			DevCon.WriteLn(Color_Red, "Gif Path[%d] - MTGS Wait! [r=0x%x]", idx + 1, getReadAmount());
+			Gif_MTGS_Wait(isMTVU());
+			DevCon.WriteLn(Color_Green, "Gif Path[%d] - MTGS Wait! [r=0x%x]", idx + 1, getReadAmount());
+			return;
+		}
+		Gif_MTGS_Wait(isMTVU());
+	}
+
 	// Moves packet data to start of buffer
 	void RealignPacket()
 	{
-		s32 offset    = curOffset - gsPack.size;
+		GUNIT_LOG("Path Buffer: Realigning packet!");
+		s32 offset = curOffset - gsPack.size;
 		s32 sizeToAdd = curSize - offset;
 		s32 intersect = sizeToAdd - offset;
 		if (intersect < 0)
@@ -276,7 +283,7 @@ struct Gif_Path
 			s32 frontFree = offset - getReadAmount();
 			if (frontFree >= sizeToAdd - intersect)
 				break;
-			Gif_MTGS_Wait(isMTVU());
+			mtgsReadWait();
 		}
 		if (offset < (s32)buffLimit)
 		{ // Needed for correct readAmount values
@@ -285,6 +292,7 @@ struct Gif_Path
 			else
 				Gif_AddBlankGSPacket(buffLimit - offset, idx);
 		}
+		//DevCon.WriteLn("Realign Packet [%d]", curSize - offset);
 		if (intersect)
 			memmove(buffer, &buffer[offset], curSize - offset);
 		else
@@ -296,19 +304,22 @@ struct Gif_Path
 
 	void CopyGSPacketData(u8* pMem, u32 size, bool aligned = false)
 	{
-		// Move gsPack to front of buffer
 		if (curSize + size > buffSize)
+		{ // Move gsPack to front of buffer
+			GUNIT_LOG("CopyGSPacketData: Realigning packet!");
 			RealignPacket();
+		}
 		for (;;)
 		{
-			s32 offset  = curOffset - gsPack.size;
+			s32 offset = curOffset - gsPack.size;
 			s32 readPos = offset - getReadAmount();
 			if (readPos >= 0)
 				break; // MTGS is reading in back of curOffset
 			if ((s32)buffLimit + readPos > (s32)curSize + (s32)size)
 				break;      // Enough free front space
-			Gif_MTGS_Wait(isMTVU()); // Let MTGS run to free up buffer space
+			mtgsReadWait(); // Let MTGS run to free up buffer space
 		}
+		pxAssertDev(curSize + size <= buffSize, "Gif Path Buffer Overflow!");
 		memcpy(&buffer[curSize], pMem, size);
 		curSize += size;
 	}
@@ -323,26 +334,34 @@ struct Gif_Path
 			done = true;
 			return mtvu.fakePacket;
 		}
+		pxAssert(!isMTVU());
 		for (;;)
 		{
 			if (!gifTag.isValid)
 			{ // Need new Gif Tag
 				// We don't have enough data for a Gif Tag
 				if (curOffset + 16 > curSize)
+				{
+					//GUNIT_LOG("Path Buffer: Not enough data for gif tag! [%d]", curSize-curOffset);
+					GUNIT_WARN("PATH %d not enough data pre tag, available %d wanted %d", gifRegs.stat.APATH, curSize - curOffset, 16);
 					return gsPack;
+				}
 
 				// Move packet to start of buffer
 				if (curOffset > buffLimit)
+				{
 					RealignPacket();
+				}
 
 				gifTag.setTag(&buffer[curOffset], 1);
 
 				state = (GIF_PATH_STATE)(gifTag.tag.FLG + 1);
-
+				GUNIT_WARN("PATH %d New tag State %d FLG %d EOP %d NLOOP %d", gifRegs.stat.APATH, gifRegs.stat.APATH, state, gifTag.tag.FLG, gifTag.tag.EOP, gifTag.tag.NLOOP);
 				// We don't have enough data for a complete GS packet
 				if (!gifTag.hasAD && curOffset + 16 + gifTag.len > curSize)
 				{
 					gifTag.isValid = false; // So next time we test again
+					GUNIT_WARN("PATH %d not enough data, available %d wanted %d", gifRegs.stat.APATH, curSize - curOffset, 16 + gifTag.len);
 					return gsPack;
 				}
 
@@ -356,7 +375,10 @@ struct Gif_Path
 				while (gifTag.nLoop && !dblSIGNAL)
 				{
 					if (curOffset + 16 > curSize)
+					{
+						GUNIT_WARN("PATH %d not enough data AD, available %d wanted %d", gifRegs.stat.APATH, curSize - curOffset, 16);
 						return gsPack; // Exit Early
+					}
 					if (gifTag.curReg() == GIF_REG_A_D)
 					{
 						if (!isMTVU())
@@ -366,8 +388,11 @@ struct Gif_Path
 					gifTag.packedStep();
 				}
 				if (dblSIGNAL && !(gifTag.tag.EOP && !gifTag.nLoop))
+				{
+					GUNIT_WARN("PATH %d early exit (double signal)", gifRegs.stat.APATH);
 					return gsPack; // Exit Early
-			} 			
+				}
+			}
 			else
 				incTag(curOffset, gsPack.size, gifTag.len); // Data length
 
@@ -383,7 +408,7 @@ struct Gif_Path
 
 				gsPack.Reset();
 				gsPack.offset = curOffset;
-
+				GUNIT_WARN("EOP PATH %d", gifRegs.stat.APATH);
 				//Path 3 Masking is timing sensitive, we need to simulate its length! (NFSU2/Outrun 2006)
 
 				if ((gifRegs.stat.APATH - 1) == GIF_PATH_3)
@@ -397,7 +422,7 @@ struct Gif_Path
 						dmaRewind = curSize - curOffset;
 						curSize = curOffset;
 					}
-				} 				
+				}
 				else
 					state = GIF_PATH_IDLE;
 
@@ -407,11 +432,13 @@ struct Gif_Path
 	}
 
 	// MTVU: Gets called on VU XGkicks on MTVU thread
-	void ExecuteGSPacketMTVU(void)
+	void ExecuteGSPacketMTVU()
 	{
 		// Move packet to start of buffer
 		if (curOffset > buffLimit)
+		{
 			RealignPacket();
+		}
 		for (;;)
 		{ // needed to be processed by pcsx2...
 			if (curOffset + 16 > curSize)
@@ -428,10 +455,14 @@ struct Gif_Path
 				{
 					if (curOffset + 16 > curSize)
 						break; // Exit Early
+					if (gifTag.curReg() == GIF_REG_A_D)
+					{
+						pxAssert(!Gif_HandlerAD_MTVU(&buffer[curOffset]));
+					}
 					incTag(curOffset, gsPack.size, 16); // 1 QWC
 					gifTag.packedStep();
 				}
-			} 			
+			}
 			else
 				incTag(curOffset, gsPack.size, gifTag.len); // Data length
 			if (curOffset >= curSize)
@@ -439,6 +470,7 @@ struct Gif_Path
 			if (gifTag.tag.EOP)
 				break;
 		}
+		pxAssert(curOffset == curSize);
 		gifTag.isValid = false;
 	}
 
@@ -460,8 +492,26 @@ struct Gif_Path
 	{
 		// FIXME is the error path useful ?
 		if (!mtvu.gsPackQueue.empty())
+		{
 			return mtvu.gsPackQueue.front();
+		}
+
+		Console.Error("MTVU: Expected gsPackQueue to have elements!");
+		pxAssert(0);
 		return GS_Packet(); // gsPack.size will be 0
+	}
+
+	// MTVU: Gets called by MTGS thread
+	void PopGSPacketMTVU()
+	{
+		mtvu.gsPackQueue.pop();
+	}
+
+	// MTVU: Returns the amount of pending
+	// GS Packets that MTGS hasn't yet processed
+	u32 GetPendingGSPackets()
+	{
+		return mtvu.gsPackQueue.size();
 	}
 };
 
@@ -487,6 +537,7 @@ struct Gif_Unit
 	// Enable softReset when resetting during game emulation
 	void Reset(bool softReset = false)
 	{
+		GUNIT_WARN(Color_Red, "Gif Unit Reset!!! [soft=%d]", softReset);
 		ResetRegs();
 		gsSIGNAL.Reset();
 		gsFINISH.Reset();
@@ -506,12 +557,13 @@ struct Gif_Unit
 	}
 
 	// Resets Gif HW Regs
+	// Warning: Do not mess with the DMA here, the reset does *NOT* touch this.
 	void ResetRegs()
 	{
-		gifRegs.stat._u32 = 0;
-		gifRegs.ctrl._u32 = 0;
-		gifRegs.mode._u32 = 0;
-		gif_fifo.init();
+		gifRegs.stat.reset();
+		gifRegs.ctrl.reset();
+		gifRegs.mode.reset();
+		CSRreg.FIFO = CSR_FIFO_EMPTY; // This is the GIF unit side FIFO, not DMA!
 	}
 
 	// Adds a finished GS Packet to the MTGS ring buffer
@@ -521,10 +573,12 @@ struct Gif_Unit
 			Gif_AddGSPacketMTVU(gsPack, path);
 		else
 			Gif_AddCompletedGSPacket(gsPack, path);
+		if (PRINT_GIF_PACKET)
+			Gif_ParsePacket(gsPack, path);
 	}
 
 	// Returns GS Packet Size in bytes
-	u32 GetGSPacketSize(GIF_PATH pathIdx, u8* pMem, u32 offset = 0, u32 size = ~0u)
+	u32 GetGSPacketSize(GIF_PATH pathIdx, u8* pMem, u32 offset = 0, u32 size = ~0u, bool flush = false)
 	{
 		u32 memMask = pathIdx ? ~0u : 0x3fffu;
 		u32 curSize = 0;
@@ -533,11 +587,20 @@ struct Gif_Unit
 			Gif_Tag gifTag(&pMem[offset & memMask]);
 			incTag(offset, curSize, 16 + gifTag.len); // Tag + Data length
 			if (pathIdx == GIF_PATH_1 && curSize >= 0x4000)
+			{
+				DevCon.Warning("Gif Unit - GS packet size exceeded VU memory size!");
 				return 0; // Bios does this... (Fixed if you delay vu1's xgkick by 103 vu cycles)
+			}
 			if (curSize >= size)
 				return size;
-			if (gifTag.tag.EOP)
+			if(((flush && gifTag.tag.EOP) || !flush) && (CHECK_XGKICKHACK || !EmuConfig.Cpu.Recompiler.EnableVU1))
+			{
+				return curSize | ((u32)gifTag.tag.EOP << 31);
+			}
+			if (gifTag.tag.EOP )
+			{
 				return curSize;
+			}
 		}
 	}
 
@@ -565,10 +628,24 @@ struct Gif_Unit
 			}
 		}
 
+		GUNIT_LOG("%s - [path=%d][size=%d]", Gif_TransferStr[(tranType >> 8) & 0xf], (tranType & 3) + 1, size);
 		if (size == 0)
+		{
+			GUNIT_WARN("Gif Unit - Size == 0");
 			return 0;
+		}
+		if (!CanDoGif())
+		{
+			GUNIT_WARN("Gif Unit - Signal or PSE Set or Dir = GS to EE");
+		}
+		//pxAssertDev((stat.APATH==0) || checkPaths(1,1,1), "Gif Unit - APATH wasn't cleared?");
 		lastTranType = tranType;
 
+		if (tranType == GIF_TRANS_FIFO)
+		{
+			if (!CanDoPath3())
+				DevCon.Warning("Gif Unit - Path 3 FIFO transfer while !CanDoPath3()");
+		}
 		if (tranType == GIF_TRANS_DMA)
 		{
 			if (!CanDoPath3())
@@ -577,12 +654,14 @@ struct Gif_Unit
 					stat.P3Q = 1;
 				return 0;
 			} // DMA Stall
+			  //if (stat.P2Q) DevCon.WriteLn("P2Q while path 3");
 		}
 		if (tranType == GIF_TRANS_XGKICK)
 		{
-			// We always buffer path1 packets
 			if (!CanDoPath1())
+			{
 				stat.P1Q = 1;
+			} // We always buffer path1 packets
 		}
 		if (tranType == GIF_TRANS_DIRECT)
 		{
@@ -648,8 +727,12 @@ struct Gif_Unit
 	int Execute(bool isPath3, bool isResume)
 	{
 		if (!CanDoGif())
+		{
+			DevCon.Error("Gif Unit - Signal or PSE Set or Dir = GS to EE");
 			return 0;
+		}
 		bool didPath3 = false;
+		bool path3Check = isPath3;
 		int curPath = stat.APATH > 0 ? stat.APATH - 1 : 0; //Init to zero if no path is already set.
 		gifPath[2].dmaRewind = 0;
 		stat.OPH = 1;
@@ -670,6 +753,7 @@ struct Gif_Unit
 							didPath3 = true;
 							stat.APATH = 0;
 							stat.IP3 = 1;
+							GUNIT_LOG(Color_Magenta, "Gif Unit - Path 3 slicing arbitration");
 							if (gsPack.size > 16)
 							{                                                 // Packet had other tags which we already processed
 								u32 subOffset = path.gifTag.isValid ? 16 : 0; // if isValid, image-primitive not finished
@@ -679,39 +763,62 @@ struct Gif_Unit
 								path.curOffset -= subOffset;                  // Start the next GS packet at the image-tag
 								path.gsPack.offset = path.curOffset;          // Set to image-tag
 								path.gifTag.isValid = false;                  // Reload tag next ExecuteGSPacket()
+								pxAssert((s32)path.curOffset >= 0);
+								pxAssert(path.state == GIF_PATH_IMAGE);
+								GUNIT_LOG(Color_Magenta, "Gif Unit - Sending path 3 sliced gs packet!");
 							}
 							continue;
 						}
 					}
 					//FlushToMTGS();
+					//DevCon.WriteLn("Incomplete GS Packet for path %d, size=%d", stat.APATH, gsPack.size);
 					break; // Not finished with GS packet
 				}
+				//DevCon.WriteLn("Adding GS Packet for path %d", stat.APATH);
 				if (gifPath[curPath].state == GIF_PATH_WAIT || gifPath[curPath].state == GIF_PATH_IDLE)
+				{
 					AddCompletedGSPacket(gsPack, (GIF_PATH)(stat.APATH - 1));
+				}
 			}
 			if (!gsSIGNAL.queued && !gifPath[0].isDone())
 			{
+				GUNIT_WARN("Swapping to PATH 1");
 				stat.APATH = 1;
 				stat.P1Q = 0;
 				curPath = 0;
-			} 			
+			}
 			else if (!gsSIGNAL.queued && !gifPath[1].isDone())
 			{
+				GUNIT_WARN("Swapping to PATH 2");
 				stat.APATH = 2;
 				stat.P2Q = 0;
 				curPath = 1;
-			} 			
+			}
 			else if (!gsSIGNAL.queued && !gifPath[2].isDone() && !Path3Masked())
 			{
+				GUNIT_WARN("Swapping to PATH 3");
 				stat.APATH = 3;
 				stat.P3Q = 0;
 				stat.IP3 = 0;
 				curPath = 2;
-			} 			
+				path3Check = true;
+			}
 			else
 			{
-				if (isResume || curPath == 0)
+				GUNIT_WARN("Finished Processing");
+				// If PATH3 was stalled due to another transfer but the DMA ended, it'll never check this
+				// So lets quickly check if it's currently set to path3
+				if (stat.APATH == 3 || path3Check)
+					gifCheckPathStatus(true);
+				else
 				{
+					if (vif1Regs.stat.VGW)
+					{
+						// Check if VIF is in a cycle or is currently "idle" waiting for GIF to come back.
+						if (!(cpuRegs.interrupt & (1 << DMAC_VIF1)))
+							CPU_INT(DMAC_VIF1, 1);
+					}
+
 					stat.APATH = 0;
 					stat.OPH = 0;
 				}
@@ -732,7 +839,8 @@ struct Gif_Unit
 		//Path3 can rewind the DMA, so we send back the amount we go back!
 		if (isPath3)
 			return gifPath[2].dmaRewind;
-		return 0;
+		else
+			return 0;
 	}
 
 	// XGkick
@@ -760,6 +868,32 @@ struct Gif_Unit
 	bool CanDoGif() const { return stat.PSE == 0 && stat.DIR == 0 && gsSIGNAL.queued == 0; }
 	//Mask stops the next packet which hasnt started from transferring
 	bool Path3Masked() const { return ((stat.M3R || stat.M3P) && (gifPath[GIF_PATH_3].state == GIF_PATH_IDLE || gifPath[GIF_PATH_3].state == GIF_PATH_WAIT)); }
+
+	void PrintInfo(bool printP1 = 1, bool printP2 = 1, bool printP3 = 1)
+	{
+		u32 a = checkPaths(1, 1, 1), b = checkQueued(1, 1, 1);
+		(void)a; // Don't warn about unused variable
+		(void)b;
+		GUNIT_LOG("Gif Unit - LastTransfer = %s, Paths = [%d,%d,%d], Queued = [%d,%d,%d]",
+				  Gif_TransferStr[(lastTranType >> 8) & 0xf],
+				  !!(a & 1), !!(a & 2), !!(a & 4), !!(b & 1), !!(b & 2), !!(b & 4));
+		GUNIT_LOG("Gif Unit - [APATH = %d][Signal = %d][PSE = %d][DIR = %d]",
+				  stat.APATH, gsSIGNAL.queued, stat.PSE, stat.DIR);
+		GUNIT_LOG("Gif Unit - [CanDoGif = %d][CanDoPath3 = %d][CanDoP3Slice = %d]",
+				  CanDoGif(), CanDoPath3(), CanDoP3Slice());
+		if (printP1)
+			PrintPathInfo(GIF_PATH_1);
+		if (printP2)
+			PrintPathInfo(GIF_PATH_2);
+		if (printP3)
+			PrintPathInfo(GIF_PATH_3);
+	}
+
+	void PrintPathInfo(GIF_PATH path)
+	{
+		GUNIT_LOG("Gif Path %d - [hasData = %d][state = %d]", path,
+				  gifPath[path].hasDataRemaining(), gifPath[path].state);
+	}
 };
 
 extern Gif_Unit gifUnit;

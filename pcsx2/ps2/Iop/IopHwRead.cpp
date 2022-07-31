@@ -18,10 +18,14 @@
 #include "IopHw_Internal.h"
 #include "Sif.h"
 #include "Sio.h"
-#include "CDVD/CdRom.h"
+#include "CDVD/Ps1CD.h"
 #include "FW.h"
-#include "DEV9/DEV9.h"
 #include "SPU2/spu2.h"
+#include "DEV9/DEV9.h"
+#include "USB/USB.h"
+#include "IopCounters.h"
+#include "IopSio2.h"
+#include "IopDma.h"
 
 #include "ps2/pgif.h"
 #include "Mdec.h"
@@ -32,8 +36,11 @@ using namespace Internal;
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem8_t __fastcall iopHwRead8_Page1( u32 addr )
+mem8_t iopHwRead8_Page1( u32 addr )
 {
+	// all addresses are assumed to be prefixed with 0x1f801xxx:
+	pxAssume( (addr >> 12) == 0x1f801 );
+
 	u32 masked_addr = addr & 0x0fff;
 
 	mem8_t ret;		// using a return var can be helpful in debugging.
@@ -58,41 +65,81 @@ mem8_t __fastcall iopHwRead8_Page1( u32 addr )
 
 		default:
 			if( masked_addr >= 0x100 && masked_addr < 0x130 )
+			{
+				DevCon.Warning( "HwRead8 from Counter16 [ignored] @ 0x%08x = 0x%02x", addr, psxHu8(addr) );
 				ret = psxHu8( addr );
+			}
 			else if( masked_addr >= 0x480 && masked_addr < 0x4a0 )
+			{
+				DevCon.Warning( "HwRead8 from Counter32 [ignored] @ 0x%08x = 0x%02x", addr, psxHu8(addr) );
 				ret = psxHu8( addr );
+			}
 			else if( (masked_addr >= pgmsk(HW_USB_START)) && (masked_addr < pgmsk(HW_USB_END)) )
+			{
 				ret = USBread8( addr );
+				PSXHW_LOG( "HwRead8 from USB @ 0x%08x = 0x%02x", addr, ret );
+			}
 			else
+			{
 				ret = psxHu8(addr);
+				PSXUnkHW_LOG( "HwRead8 from Unknown @ 0x%08x = 0x%02x", addr, ret );
+			}
 		return ret;
 	}
 
+	IopHwTraceLog<mem8_t>( addr, ret, true );
 	return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem8_t __fastcall iopHwRead8_Page3( u32 addr )
+mem8_t iopHwRead8_Page3( u32 addr )
 {
-	if( addr == 0x1f803100 ) // PS/EE/IOP conf related
-		return 0xFF; //all high bus is the corect default state for CEX PS2!
-	return psxHu8( addr );
+	// all addresses are assumed to be prefixed with 0x1f803xxx:
+	pxAssume( (addr >> 12) == 0x1f803 );
+
+	mem8_t ret;
+	if( addr == 0x1f803100 )	// PS/EE/IOP conf related
+		//ret = 0x10; // Dram 2M
+		ret = 0xFF; //all high bus is the corect default state for CEX PS2!
+	else
+		ret = psxHu8( addr );
+
+	IopHwTraceLog<mem8_t>( addr, ret, true );
+	return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem8_t __fastcall iopHwRead8_Page8( u32 addr )
+mem8_t iopHwRead8_Page8( u32 addr )
 {
+	// all addresses are assumed to be prefixed with 0x1f808xxx:
+	pxAssume( (addr >> 12) == 0x1f808 );
+
+	mem8_t ret;
+
 	if( addr == HW_SIO2_FIFO )
-		return sio2_fifoOut();//sio2 serial data feed/fifo_out
-	return psxHu8( addr );
+		ret = sio2_fifoOut();//sio2 serial data feed/fifo_out
+	else
+		ret = psxHu8( addr );
+
+	IopHwTraceLog<mem8_t>( addr, ret, true );
+	return ret;
 }
 //////////////////////////////////////////////////////////////////////////////////////////
 //
 template< typename T >
 static __fi T _HwRead_16or32_Page1( u32 addr )
 {
+	// all addresses are assumed to be prefixed with 0x1f801xxx:
+	pxAssume( (addr >> 12) == 0x1f801 );
+
+	// all addresses should be aligned to the data operand size:
+	pxAssume(
+		( sizeof(T) == 2 && (addr & 1) == 0 ) ||
+		( sizeof(T) == 4 && (addr & 3) == 0 )
+	);
+
 	u32 masked_addr = pgmsk( addr );
 	T ret = 0;
 
@@ -123,6 +170,7 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 			break;
 			
 			default:
+				DevCon.Warning("Unknown 16bit counter read %x", addr);
 				ret = psxHu32(addr);
 			break;
 		}
@@ -162,6 +210,7 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 			break;
 
 			default:
+				DevCon.Warning("Unknown 32bit counter read %x", addr);
 				ret = psxHu32(addr);
 			break;
 		}
@@ -182,6 +231,7 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 			ret = SPU2read( addr );
 		else
 		{
+			DevCon.Warning( "HwRead32 from SPU2? @ 0x%08X .. What manner of trickery is this?!", addr );
 			ret = psxHu32(addr);
 		}
 	}
@@ -189,7 +239,15 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 	// PS1 GPU access
 	//
 	else if( (masked_addr >= pgmsk(HW_PS1_GPU_START)) && (masked_addr < pgmsk(HW_PS1_GPU_END)) )
+	{
+		// todo: psx mode: this is new
+		if( sizeof(T) == 2 )
+			DevCon.Warning( "HwRead16 from PS1 GPU? @ 0x%08X .. What manner of trickery is this?!", addr );
+
+		pxAssert(sizeof(T) == 4);
+
 		ret = psxDma2GpuR(addr);
+	}
 	else
 	{
 		switch( masked_addr )
@@ -208,6 +266,7 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 			mcase(HW_SIO_STAT):
 				ret = sio.StatReg;
 				sioStatRead();
+				// Console.WriteLn( "SIO0 Read STAT %02X INT_STAT= %08X IOPpc= %08X " , ret, psxHu32(0x1070), psxRegs.pc);
 			break;
 
 			mcase(HW_SIO_MODE):
@@ -245,21 +304,11 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 			break;
 
 			// ------------------------------------------------------------------------
-			// Soon-to-be outdated SPU2 DMA hack (spu2 manages its own DMA MADR).
-			//
-			mcase(0x1f8010C0):
-				ret = SPU2ReadMemAddr(0);
-			break;
-
-			mcase(0x1f801500):
-				ret = SPU2ReadMemAddr(1);
-			break;
-
-			// ------------------------------------------------------------------------
 			// Legacy GPU  emulation
 			//
 			mcase(0x1f8010ac) :
 				ret = psxHu32(addr);
+				DevCon.Warning("SIF2 IOP TADR?? read");
 			break;
 
 			mcase(HW_PS1_GPU_DATA) :
@@ -273,11 +322,17 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 			mcase (0x1f801820): // MDEC
 				// ret = psxHu32(addr); // old
 				ret = mdecRead0();
+#if PSX_EXTRALOGS
+				DevCon.Warning("MDEC 1820 Read %x", ret);
+#endif
 			break;
 			
 			mcase (0x1f801824): // MDEC
 				//ret = psxHu32(addr); // old
 				ret = mdecRead1();
+#if PSX_EXTRALOGS
+			DevCon.Warning("MDEC 1824 Read %x", ret);
+#endif
 			break;
 
 			// ------------------------------------------------------------------------
@@ -292,6 +347,7 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 		}
 	}
 
+	IopHwTraceLog<T>( addr, ret, true );
 	return ret;
 }
 
@@ -301,43 +357,60 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem16_t __fastcall iopHwRead16_Page1( u32 addr )
+mem16_t iopHwRead16_Page1( u32 addr )
 {
 	return _HwRead_16or32_Page1<mem16_t>( addr );
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem16_t __fastcall iopHwRead16_Page3( u32 addr )
+mem16_t iopHwRead16_Page3( u32 addr )
 {
-	return psxHu16(addr);
+	// all addresses are assumed to be prefixed with 0x1f803xxx:
+	pxAssume( (addr >> 12) == 0x1f803 );
+
+	mem16_t ret = psxHu16(addr);
+	IopHwTraceLog<mem16_t>( addr, ret, true );
+	return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem16_t __fastcall iopHwRead16_Page8( u32 addr )
+mem16_t iopHwRead16_Page8( u32 addr )
 {
-	return psxHu16(addr);
+	// all addresses are assumed to be prefixed with 0x1f808xxx:
+	pxAssume( (addr >> 12) == 0x1f808 );
+
+	mem16_t ret = psxHu16(addr);
+	IopHwTraceLog<mem16_t>( addr, ret, true );
+	return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem32_t __fastcall iopHwRead32_Page1( u32 addr )
+mem32_t iopHwRead32_Page1( u32 addr )
 {
 	return _HwRead_16or32_Page1<mem32_t>( addr );
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem32_t __fastcall iopHwRead32_Page3( u32 addr )
+mem32_t iopHwRead32_Page3( u32 addr )
 {
-	return psxHu32(addr);
+	// all addresses are assumed to be prefixed with 0x1f803xxx:
+	pxAssume( (addr >> 12) == 0x1f803 );
+	const mem32_t ret = psxHu32(addr);
+	IopHwTraceLog<mem32_t>( addr, ret, true );
+	return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-mem32_t __fastcall iopHwRead32_Page8( u32 addr )
+mem32_t iopHwRead32_Page8( u32 addr )
 {
+	// all addresses are assumed to be prefixed with 0x1f808xxx:
+	pxAssume( (addr >> 12) == 0x1f808 );
+
 	u32 masked_addr = addr & 0x0fff;
 	mem32_t ret;
 
@@ -373,6 +446,12 @@ mem32_t __fastcall iopHwRead32_Page8( u32 addr )
 				// The old IOP system just ignored it, so that's what we do here.  I've included commented code
 				// for treating it as a 16/32 bit write though [which is what the SIO does, for example).
 				mcase(HW_SIO2_FIFO) :
+					//ret = sio2_fifoOut();
+					//ret |= sio2_fifoOut() << 8;
+					//ret |= sio2_fifoOut() << 16;
+					//ret |= sio2_fifoOut() << 24;
+				//break;
+					DevCon.Warning("HW_SIO2_FIFO read");
 					ret = psxHu32(addr);
 				break;
 
@@ -390,6 +469,7 @@ mem32_t __fastcall iopHwRead32_Page8( u32 addr )
 	}
 	else ret = psxHu32(addr);
 
+	IopHwTraceLog<mem32_t>( addr, ret, true );
 	return ret;
 }
 

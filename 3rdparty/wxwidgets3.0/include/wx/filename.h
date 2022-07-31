@@ -14,6 +14,7 @@
 #include "wx/arrstr.h"
 #include "wx/filefn.h"
 #include "wx/datetime.h"
+#include "wx/intl.h"
 #include "wx/longlong.h"
 #include "wx/file.h"
 
@@ -27,7 +28,7 @@ class WXDLLIMPEXP_FWD_BASE wxFFile;
 
 // this symbol is defined for the platforms where file systems use volumes in
 // paths
-#if defined(__WINDOWS__)
+#if defined(__WINDOWS__) || defined(__DOS__) || defined(__OS2__)
     #define wxHAS_FILESYSTEM_VOLUMES
 #endif
 
@@ -250,6 +251,51 @@ public:
     bool IsFileReadable() const { return wxIsReadable(GetFullPath()); }
     static bool IsFileReadable(const wxString &path) { return wxFileExists(path) && wxIsReadable(path); }
 
+    bool IsFileExecutable() const { return wxIsExecutable(GetFullPath()); }
+    static bool IsFileExecutable(const wxString &path) { return wxFileExists(path) && wxIsExecutable(path); }
+
+        // set the file permissions to a combination of wxPosixPermissions enum
+        // values
+    bool SetPermissions(int permissions);
+
+
+    // time functions
+#if wxUSE_DATETIME
+        // set the file last access/mod and creation times
+        // (any of the pointers may be NULL)
+    bool SetTimes(const wxDateTime *dtAccess,
+                  const wxDateTime *dtMod,
+                  const wxDateTime *dtCreate) const;
+
+        // set the access and modification times to the current moment
+    bool Touch() const;
+
+        // return the last access, last modification and create times
+        // (any of the pointers may be NULL)
+    bool GetTimes(wxDateTime *dtAccess,
+                  wxDateTime *dtMod,
+                  wxDateTime *dtCreate) const;
+
+        // convenience wrapper: get just the last mod time of the file
+    wxDateTime GetModificationTime() const
+    {
+        wxDateTime dtMod;
+        (void)GetTimes(NULL, &dtMod, NULL);
+        return dtMod;
+    }
+#endif // wxUSE_DATETIME
+
+#if defined( __WXOSX_MAC__ ) && wxOSX_USE_CARBON
+    bool MacSetTypeAndCreator( wxUint32 type , wxUint32 creator ) ;
+    bool MacGetTypeAndCreator( wxUint32 *type , wxUint32 *creator ) const;
+    // gets the 'common' type and creator for a certain extension
+    static bool MacFindDefaultTypeAndCreator( const wxString& ext , wxUint32 *type , wxUint32 *creator ) ;
+    // registers application defined extensions and their default type and creator
+    static void MacRegisterDefaultTypeAndCreator( const wxString& ext , wxUint32 type , wxUint32 creator ) ;
+    // looks up the appropriate type and creator from the registration and then sets
+    bool MacSetDefaultTypeAndCreator() ;
+#endif
+
     // various file/dir operations
 
         // retrieve the value of the current working directory
@@ -261,6 +307,7 @@ public:
     static bool SetCwd( const wxString &cwd );
 
         // get the value of user home (Unix only mainly)
+    void AssignHomeDir();
     static wxString GetHomeDir();
 
         // get the system temporary directory
@@ -268,6 +315,7 @@ public:
 
 #if wxUSE_FILE || wxUSE_FFILE
         // get a temp file name starting with the specified prefix
+    void AssignTempFileName(const wxString& prefix);
     static wxString CreateTempFileName(const wxString& prefix);
 #endif // wxUSE_FILE
 
@@ -275,6 +323,7 @@ public:
         // get a temp file name starting with the specified prefix and open the
         // file passed to us using this name for writing (atomically if
         // possible)
+    void AssignTempFileName(const wxString& prefix, wxFile *fileTemp);
     static wxString CreateTempFileName(const wxString& prefix,
                                        wxFile *fileTemp);
 #endif // wxUSE_FILE
@@ -283,6 +332,7 @@ public:
         // get a temp file name starting with the specified prefix and open the
         // file passed to us using this name for writing (atomically if
         // possible)
+    void AssignTempFileName(const wxString& prefix, wxFFile *fileTemp);
     static wxString CreateTempFileName(const wxString& prefix,
                                        wxFFile *fileTemp);
 #endif // wxUSE_FFILE
@@ -345,6 +395,15 @@ public:
         return !m_dontFollowLinks;
     }
 
+#if defined(__WIN32__) && !defined(__WXWINCE__) && wxUSE_OLE
+        // if the path is a shortcut, return the target and optionally,
+        // the arguments
+    bool GetShortcutTarget(const wxString& shortcutPath,
+                           wxString& targetFilename,
+                           wxString* arguments = NULL) const;
+#endif
+
+#ifndef __WXWINCE__
         // if the path contains the value of the environment variable named envname
         // then this function replaces it with the string obtained from
         //    wxString::Format(replacementFmtString, value_of_envname_variable)
@@ -356,6 +415,12 @@ public:
     bool ReplaceEnvVariable(const wxString& envname,
                             const wxString& replacementFmtString = "$%s",
                             wxPathFormat format = wxPATH_NATIVE);
+#endif
+
+        // replaces, if present in the path, the home directory for the given user
+        // (see wxGetHomeDir) with a tilde
+    bool ReplaceHomeDir(wxPathFormat format = wxPATH_NATIVE);
+
 
     // Comparison
 
@@ -380,6 +445,14 @@ public:
 
         // is this filename absolute?
     bool IsAbsolute(wxPathFormat format = wxPATH_NATIVE) const;
+
+        // is this filename relative?
+    bool IsRelative(wxPathFormat format = wxPATH_NATIVE) const
+        { return !IsAbsolute(format); }
+
+    // Returns the characters that aren't allowed in filenames
+    // on the specified platform.
+    static wxString GetForbiddenChars(wxPathFormat format = wxPATH_NATIVE);
 
     // Information about path format
 
@@ -431,6 +504,7 @@ public:
     bool HasVolume() const                      { return !m_volume.empty(); }
 
     // full name is the file name + extension (but without the path)
+    void SetFullName(const wxString& fullname);
     wxString GetFullName() const;
 
     const wxArrayString& GetDirs() const        { return m_dirs; }
@@ -506,14 +580,27 @@ public:
         // returns the size of the given filename
     wxULongLong GetSize() const;
     static wxULongLong GetSize(const wxString &file);
+
+        // returns the size in a human readable form
+    wxString
+    GetHumanReadableSize(const wxString& nullsize = wxGetTranslation("Not available"),
+                         int precision = 1,
+                         wxSizeConvention conv = wxSIZE_CONV_TRADITIONAL) const;
+    static wxString
+    GetHumanReadableSize(const wxULongLong& sz,
+                         const wxString& nullsize = wxGetTranslation("Not available"),
+                         int precision = 1,
+                         wxSizeConvention conv = wxSIZE_CONV_TRADITIONAL);
 #endif // wxUSE_LONGLONG
 
 
     // deprecated methods, don't use any more
     // --------------------------------------
 
+#ifndef __DIGITALMARS__
     wxString GetPath( bool withSep, wxPathFormat format = wxPATH_NATIVE ) const
         { return GetPath(withSep ? wxPATH_GET_SEPARATOR : 0, format); }
+#endif
     wxString GetPathWithSep(wxPathFormat format = wxPATH_NATIVE ) const
         { return GetPath(wxPATH_GET_VOLUME | wxPATH_GET_SEPARATOR, format); }
 

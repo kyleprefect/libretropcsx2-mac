@@ -24,7 +24,7 @@
 //   - At the "cheats_ws" folder or inside "cheats_ws.zip" (the zip also called "widescreen cheats DB")
 //     - the latter is searched if the former is not found for a CRC
 //     - UI name: "Widescreen hacks/patches", controlled via system -> enable widescreen patches
-// - At GameIndex.DBF inside a [patches] section
+// - At GameIndex.yaml inside a [patches] section
 //   - UI name: "Patches", controlled via system -> enable automatic game fixes
 //   - note that automatic game fixes also controls automatic config changes from GameIndex.dbf (UI name: "fixes")
 //
@@ -35,9 +35,11 @@
 // - The 6 widescreen patches are 6 pnach-style patch lines loaded either from cheats_ws folder or from cheats_ws.zip
 
 
-#include "Pcsx2Defs.h"
+#include "common/Pcsx2Defs.h"
 #include "SysForwardDefs.h"
-#include "AppGameDatabase.h"
+#include "GameDatabase.h"
+#include <string>
+#include <string_view>
 
 enum patch_cpu_type {
 	NO_CPU,
@@ -51,7 +53,10 @@ enum patch_data_type {
 	SHORT_T,
 	WORD_T,
 	DOUBLE_T,
-	EXTENDED_T
+	EXTENDED_T,
+	SHORT_LE_T,
+	WORD_LE_T,
+	DOUBLE_LE_T
 };
 
 // "place" is the first number at a pnach line (patch=<place>,...), e.g.:
@@ -62,6 +67,7 @@ enum patch_data_type {
 // PCSX2 currently supports the following values:
 // 0 - apply the patch line once on game boot/startup
 // 1 - apply the patch line continuously (technically - on every vsync)
+// 2 - effect of 0 and 1 combined, see below 
 // Note:
 // - while it may seem that a value of 1 does the same as 0, but also later
 //   continues to apply the patch on every vsync - it's not.
@@ -70,16 +76,16 @@ enum patch_data_type {
 //   will get applied before the first vsync and therefore earlier than 1 patches.
 // - There's no "place" value which indicates to apply both once on startup
 //   and then also continuously, however such behavior can be achieved by
-//   duplicating the line where one has a 0 place and the other has a 1 place.
-// FIXME: Do we want to apply the place=1 patches also on startup? (when the 0 patches are applied)
+//   duplicating the line where one has a 0 place and the other has a 1 place. 
 enum patch_place_type {
 	PPT_ONCE_ON_LOAD = 0,
 	PPT_CONTINUOUSLY = 1,
+	PPT_COMBINED_0_1 = 2,
 
 	_PPT_END_MARKER
 };
 
-typedef void PATCHTABLEFUNC( const wxString& text1, const wxString& text2 );
+typedef void PATCHTABLEFUNC(const std::string_view& text1, const std::string_view& text2);
 
 struct IniPatch
 {
@@ -102,11 +108,9 @@ namespace PatchFunc
 // The following LoadPatchesFrom* functions:
 // - do not reset/unload previously loaded patches (use ForgetLoadedPatches() for that)
 // - do not actually patch the emulation memory (that happens at ApplyLoadedPatches(...) )
-extern int LoadPatchesFromGamesDB(const wxString& crc, const GameDatabaseSchema::GameEntry& game);
-extern int LoadPatchesFromDir(wxString name, const wxDirName& folderName, const wxString& friendlyName);
-extern int Load60fpsPatchesFromDatabase(std::string gameCRC);
-extern int LoadWidescreenPatchesFromDatabase(std::string gameCRC);
-extern int LoadNointerlacingPatchesFromDatabase(std::string gameCRC);
+extern int  LoadPatchesFromString(const std::string& patches);
+extern int  LoadPatchesFromDir(const std::string& crc, const std::string& folder, const char* friendly_name, bool show_error_when_missing);
+extern int  LoadPatchesFromZip(const std::string& crc, const u8* zip_data, size_t zip_data_size);
 
 // Patches the emulation memory by applying all the loaded patches with a specific place value.
 // Note: unless you know better, there's no need to check whether or not different patch sources
@@ -120,10 +124,19 @@ extern void ApplyLoadedPatches(patch_place_type place);
 // Following ApplyLoadedPatches calls will do nothing until some LoadPatchesFrom* are invoked.
 extern void ForgetLoadedPatches();
 
+extern const IConsoleWriter *PatchesCon;
+
+#ifndef PCSX2_CORE
 // Patch loading is verbose only once after the crc changes, this makes it think that the crc changed.
 extern void PatchesVerboseReset();
+#endif
 
 // The following prototypes seem unused in PCSX2, but maybe part of the cheats browser?
 // regardless, they don't seem to have an implementation anywhere.
 // extern int  AddPatch(int Mode, int Place, int Address, int Size, u64 data);
 // extern void ResetPatch(void);
+
+// Swaps endianess of InputNum
+// ex. 01020304 -> 04030201
+// BitLength is length of InputNum in bits, ex. double,64  word,32  short,16
+extern u64 SwapEndian(u64 InputNum, u8 BitLength);

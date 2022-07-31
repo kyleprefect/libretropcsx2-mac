@@ -23,15 +23,24 @@
 
 #include "wx/defs.h"        // everybody should include this
 
-#if defined(__WXMAC__)
+#if defined(__WXMAC__) || defined(__VISAGECPP__)
     #include <ctype.h>
 #endif
 
+#if defined(__VISAGECPP__) && __IBMCPP__ >= 400
+   // problem in VACPP V4 with including stdlib.h multiple times
+   // strconv includes it anyway
+#  include <stdio.h>
+#  include <string.h>
+#  include <stdarg.h>
+#  include <limits.h>
+#else
 #  include <string.h>
 #  include <stdio.h>
 #  include <stdarg.h>
 #  include <limits.h>
 #  include <stdlib.h>
+#endif
 
 #include "wx/wxcrtbase.h"   // for wxChar, wxStrlen() etc.
 #include "wx/strvararg.h"
@@ -66,10 +75,20 @@
 
     // change this 0 to 1 to enable additional (very expensive) asserts
     // verifying that string caching logic works as expected
-    #define wxSTRING_CACHE_ASSERT(cond)
+    #if 0
+        #define wxSTRING_CACHE_ASSERT(cond) wxASSERT(cond)
+    #else
+        #define wxSTRING_CACHE_ASSERT(cond)
+    #endif
 #endif // wxUSE_STRING_POS_CACHE
 
 class WXDLLIMPEXP_FWD_BASE wxString;
+
+// unless this symbol is predefined to disable the compatibility functions, do
+// use them
+#ifndef WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
+    #define WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER 1
+#endif
 
 namespace wxPrivate
 {
@@ -86,6 +105,44 @@ namespace wxPrivate
 #define   wxCSTRINGCAST (wxChar *)(const wxChar *)
 #define   wxMBSTRINGCAST (char *)(const char *)
 #define   wxWCSTRINGCAST (wchar_t *)(const wchar_t *)
+
+// ----------------------------------------------------------------------------
+// constants
+// ----------------------------------------------------------------------------
+
+#if WXWIN_COMPATIBILITY_2_6
+
+// deprecated in favour of wxString::npos, don't use in new code
+//
+// maximum possible length for a string means "take all string" everywhere
+#define wxSTRING_MAXLEN wxString::npos
+
+#endif // WXWIN_COMPATIBILITY_2_6
+
+// ---------------------------------------------------------------------------
+// global functions complementing standard C string library replacements for
+// strlen() and portable strcasecmp()
+//---------------------------------------------------------------------------
+
+#if WXWIN_COMPATIBILITY_2_8
+// Use wxXXX() functions from wxcrt.h instead! These functions are for
+// backwards compatibility only.
+
+// checks whether the passed in pointer is NULL and if the string is empty
+wxDEPRECATED_MSG("use wxIsEmpty() instead")
+inline bool IsEmpty(const char *p) { return (!p || !*p); }
+
+// safe version of strlen() (returns 0 if passed NULL pointer)
+wxDEPRECATED_MSG("use wxStrlen() instead")
+inline size_t Strlen(const char *psz)
+  { return psz ? strlen(psz) : 0; }
+
+// portable strcasecmp/_stricmp
+wxDEPRECATED_MSG("use wxStricmp() instead")
+inline int Stricmp(const char *psz1, const char *psz2)
+    { return wxCRT_StricmpA(psz1, psz2); }
+
+#endif // WXWIN_COMPATIBILITY_2_8
 
 // ----------------------------------------------------------------------------
 // wxCStrData
@@ -171,6 +228,8 @@ public:
     // example):
     wxCStrData operator-(ptrdiff_t n) const
     {
+        wxASSERT_MSG( n <= (ptrdiff_t)m_offset,
+                      wxT("attempt to construct address before the beginning of the string") );
         return wxCStrData(m_str, m_offset - n, m_owned);
     }
 
@@ -369,7 +428,10 @@ private:
       size_t len;
 
       SubstrBufFromType(const T& data_, size_t len_)
-          : data(data_), len(len_) { }
+          : data(data_), len(len_)
+      {
+          wxASSERT_MSG( len != npos, "must have real length" );
+      }
   };
 
 #if wxUSE_UNICODE_UTF8
@@ -531,6 +593,33 @@ private:
   // callable from a debugger, to show the cache contents
   friend struct wxStrCacheDumper;
 
+  // uncomment this to have access to some profiling statistics on program
+  // termination
+  //#define wxPROFILE_STRING_CACHE
+
+#ifdef wxPROFILE_STRING_CACHE
+  static struct PosToImplCacheStats
+  {
+      unsigned postot,  // total non-trivial calls to PosToImpl
+               poshits, // cache hits from PosToImpl()
+               mishits, // cached position beyond the needed one
+               sumpos,  // sum of all positions, used to compute the
+                        // average position after dividing by postot
+               sumofs,  // sum of all offsets after using the cache, used to
+                        // compute the average after dividing by hits
+               lentot,  // number of total calls to length()
+               lenhits; // number of cache hits in length()
+  } ms_cacheStats;
+
+  friend struct wxStrCacheStatsDumper;
+
+  #define wxCACHE_PROFILE_FIELD_INC(field) ms_cacheStats.field++
+  #define wxCACHE_PROFILE_FIELD_ADD(field, val) ms_cacheStats.field += (val)
+#else // !wxPROFILE_STRING_CACHE
+  #define wxCACHE_PROFILE_FIELD_INC(field)
+  #define wxCACHE_PROFILE_FIELD_ADD(field, val)
+#endif // wxPROFILE_STRING_CACHE/!wxPROFILE_STRING_CACHE
+
   // note: it could seem that the functions below shouldn't be inline because
   // they are big, contain loops and so the compiler shouldn't be able to
   // inline them anyhow, however moving them into string.cpp does decrease the
@@ -599,11 +688,24 @@ private:
 
   size_t DoPosToImpl(size_t pos) const
   {
+      wxCACHE_PROFILE_FIELD_INC(postot);
+
       // NB: although the case of pos == 1 (and offset from cached position
       //     equal to 1) are common, nothing is gained by writing special code
       //     for handling them, the compiler (at least g++ 4.1 used) seems to
       //     optimize the code well enough on its own
+
+      wxCACHE_PROFILE_FIELD_ADD(sumpos, pos);
+
       Cache::Element * const cache = GetCacheElement();
+
+      // cached position can't be 0 so if it is, it means that this entry was
+      // used for length caching only so far, i.e. it doesn't count as a hit
+      // from our point of view
+      if ( cache->pos )
+      {
+          wxCACHE_PROFILE_FIELD_INC(poshits);
+      }
 
       if ( pos == cache->pos )
           return cache->impl;
@@ -612,7 +714,14 @@ private:
       // instead of complicating code even further by seeking backwards in this
       // case
       if ( cache->pos > pos )
+      {
+          wxCACHE_PROFILE_FIELD_INC(mishits);
+
           cache->ResetPos();
+      }
+
+      wxCACHE_PROFILE_FIELD_ADD(sumofs, pos - cache->pos);
+
 
       wxStringImpl::const_iterator i(m_impl.begin() + cache->impl);
       for ( size_t n = cache->pos; n < pos; n++ )
@@ -1210,7 +1319,7 @@ public:
     wxString(const wxStdWideString& str)
         { assign(str.c_str(), str.length()); }
   #endif
-
+#ifndef _WIN32 // PCSX2: We don't want to accidentally interpret utf-8 std::strings as something else!
   #if !wxUSE_UNICODE // ANSI build
     // FIXME-UTF8: do this in UTF8 build #if wxUSE_UTF8_LOCALE_ONLY, too
     wxString(const std::string& str) : m_impl(str) {}
@@ -1218,6 +1327,7 @@ public:
     wxString(const std::string& str)
         { assign(str.c_str(), str.length()); }
   #endif
+#endif
 #endif // wxUSE_STD_STRING
 
   // Also always provide explicit conversions to std::[w]string in any case,
@@ -1302,6 +1412,8 @@ public:
   size_t length() const
   {
 #if wxUSE_STRING_POS_CACHE
+      wxCACHE_PROFILE_FIELD_INC(lentot);
+
       Cache::Element * const cache = GetCacheElement();
 
       if ( cache->len == npos )
@@ -1313,6 +1425,8 @@ public:
       }
       else
       {
+          wxCACHE_PROFILE_FIELD_INC(lenhits);
+
           wxSTRING_CACHE_ASSERT( (int)cache->len == end() - begin() );
       }
 
@@ -1390,6 +1504,10 @@ public:
   // contents test
     // Is an ascii value
   bool IsAscii() const;
+    // Is a number
+  bool IsNumber() const;
+    // Is a word
+  bool IsWord() const;
 
   // data access (all indexes are 0 based)
     // read access
@@ -1409,12 +1527,14 @@ public:
     // get last character
     wxUniChar Last() const
     {
+      wxASSERT_MSG( !empty(), wxT("wxString: index out of bounds") );
       return *rbegin();
     }
 
     // get writable last character
     wxUniCharRef Last()
     {
+      wxASSERT_MSG( !empty(), wxT("wxString: index out of bounds") );
       return *rbegin();
     }
 
@@ -1501,13 +1621,17 @@ public:
     // messages for the code which relies on implicit conversion to char* in
     // STL build
 #if !wxUSE_STD_STRING_CONV_IN_WXSTRING
+#ifndef _WIN32 // PCSX2: std::string conversion removal
     operator const char*() const { return c_str(); }
+#endif
     operator const wchar_t*() const { return c_str(); }
 
+#ifndef _WIN32 // PCSX2: std::string conversion removal
     // implicit conversion to untyped pointer for compatibility with previous
     // wxWidgets versions: this is the same as conversion to const char * so it
     // may fail!
     operator const void*() const { return c_str(); }
+#endif
 #endif // !wxUSE_STD_STRING_CONV_IN_WXSTRING
 
     // identical to c_str(), for MFC compatibility
@@ -1580,6 +1704,8 @@ public:
     {
       if ( !utf8 )
           return wxEmptyString;
+
+      wxASSERT( wxStringOperations::IsValidUtf8String(utf8) );
       return FromImpl(wxStringImpl(utf8));
     }
     static wxString FromUTF8Unchecked(const char *utf8, size_t len)
@@ -1588,6 +1714,8 @@ public:
           return wxEmptyString;
       if ( len == npos )
           return FromUTF8Unchecked(utf8);
+
+      wxASSERT( wxStringOperations::IsValidUtf8String(utf8, len) );
       return FromImpl(wxStringImpl(utf8, len));
     }
 
@@ -1621,6 +1749,8 @@ public:
     static wxString FromUTF8Unchecked(const char *utf8, size_t len = npos)
     {
         const wxString s(utf8, wxMBConvUTF8(), len);
+        wxASSERT_MSG( !utf8 || !*utf8 || !s.empty(),
+                      "string must be valid UTF-8" );
         return s;
     }
     const wxScopedCharBuffer utf8_str() const { return mb_str(wxMBConvUTF8()); }
@@ -1645,6 +1775,9 @@ public:
                                                &wlen
                                              )
                             );
+        wxASSERT_MSG( !utf8 || !*utf8 || wlen,
+                      "string must be valid UTF-8" );
+
         return wxString(buf.data(), wlen);
     }
     const wxScopedCharBuffer utf8_str() const
@@ -1848,6 +1981,11 @@ public:
       // string += string
   wxString& operator<<(const wxString& s)
   {
+#if WXWIN_COMPATIBILITY_2_8 && !wxUSE_STL_BASED_WXSTRING && !wxUSE_UNICODE_UTF8
+    wxASSERT_MSG( s.IsValid(),
+                  wxT("did you forget to call UngetWriteBuf()?") );
+#endif
+
     append(s);
     return *this;
   }
@@ -2041,6 +2179,8 @@ public:
 
       // get first nCount characters
   wxString Left(size_t nCount) const;
+      // get last nCount characters
+  wxString Right(size_t nCount) const;
       // get all characters before the first occurrence of ch
       // (returns the whole string if ch not found) and also put everything
       // following the first occurrence of ch into rest if it's non-NULL
@@ -2069,10 +2209,18 @@ public:
   wxString& MakeLower();
       // convert to lower case, return the copy of the string
   wxString Lower() const { return wxString(*this).MakeLower(); }
+      // convert the first character to the upper case and the rest to the
+      // lower one, return the modified string itself
+  wxString& MakeCapitalized();
+      // convert the first character to the upper case and the rest to the
+      // lower one, return the copy of the string
+  wxString Capitalize() const { return wxString(*this).MakeCapitalized(); }
 
   // trimming/padding whitespace (either side) and truncating
       // remove spaces from left or from right (default) side
   wxString& Trim(bool bFromRight = true);
+      // add nCount copies chPad in the beginning or at the end (default)
+  wxString& Pad(size_t nCount, wxUniChar chPad = wxT(' '), bool bFromRight = true);
 
   // searching and replacing
       // searching (return starting index, or -1 if not found)
@@ -2129,16 +2277,27 @@ public:
   bool ToULong(unsigned long *val, int base = 10) const;
       // convert to wxLongLong
 #if defined(wxLongLong_t)
+  bool ToLongLong(wxLongLong_t *val, int base = 10) const;
       // convert to wxULongLong
   bool ToULongLong(wxULongLong_t *val, int base = 10) const;
 #endif // wxLongLong_t
       // convert to a double
   bool ToDouble(double *val) const;
 
+  // conversions to numbers using C locale
+      // convert to a signed integer
+  bool ToCLong(long *val, int base = 10) const;
+      // convert to an unsigned integer
+  bool ToCULong(unsigned long *val, int base = 10) const;
+      // convert to a double
+  bool ToCDouble(double *val) const;
+
   // create a string representing the given floating point number with the
   // default (like %g) or fixed (if precision >=0) precision
     // in the current locale
   static wxString FromDouble(double val, int precision = -1);
+    // in C locale
+  static wxString FromCDouble(double val, int precision = -1);
 
 #ifndef wxNEEDS_WXSTRING_PRINTF_MIXIN
   // formatted input/output
@@ -2147,6 +2306,17 @@ public:
   // int Printf(const wxString& format, ...);
   WX_DEFINE_VARARG_FUNC(int, Printf, 1, (const wxFormatString&),
                         DoPrintfWchar, DoPrintfUtf8)
+#ifdef __WATCOMC__
+  // workaround for http://bugzilla.openwatcom.org/show_bug.cgi?id=351
+  WX_VARARG_WATCOM_WORKAROUND(int, Printf, 1, (const wxString&),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(int, Printf, 1, (const wxCStrData&),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(int, Printf, 1, (const char*),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(int, Printf, 1, (const wchar_t*),
+                              (wxFormatString(f1)));
+#endif
 #endif // !wxNEEDS_WXSTRING_PRINTF_MIXIN
     // as vprintf(), returns the number of characters written or < 0 on error
   int PrintfV(const wxString& format, va_list argptr);
@@ -2156,6 +2326,17 @@ public:
   // static wxString Format(const wxString& format, ...) WX_ATTRIBUTE_PRINTF_1;
   WX_DEFINE_VARARG_FUNC(static wxString, Format, 1, (const wxFormatString&),
                         DoFormatWchar, DoFormatUtf8)
+#ifdef __WATCOMC__
+  // workaround for http://bugzilla.openwatcom.org/show_bug.cgi?id=351
+  WX_VARARG_WATCOM_WORKAROUND(static wxString, Format, 1, (const wxString&),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(static wxString, Format, 1, (const wxCStrData&),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(static wxString, Format, 1, (const char*),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(static wxString, Format, 1, (const wchar_t*),
+                              (wxFormatString(f1)));
+#endif
 #endif
     // the same as above, but takes a va_list
   static wxString FormatV(const wxString& format, va_list argptr);
@@ -2167,6 +2348,17 @@ public:
     // minimize the string's memory
     // only works if the data of this string is not shared
   bool Shrink();
+#if WXWIN_COMPATIBILITY_2_8 && !wxUSE_STL_BASED_WXSTRING && !wxUSE_UNICODE_UTF8
+    // These are deprecated, use wxStringBuffer or wxStringBufferLength instead
+    //
+    // get writable buffer of at least nLen bytes. Unget() *must* be called
+    // a.s.a.p. to put string back in a reasonable state!
+  wxDEPRECATED( wxStringCharType *GetWriteBuf(size_t nLen) );
+    // call this immediately after GetWriteBuf() has been used
+  wxDEPRECATED( void UngetWriteBuf() );
+  wxDEPRECATED( void UngetWriteBuf(size_t nLen) );
+#endif // WXWIN_COMPATIBILITY_2_8 && !wxUSE_STL_BASED_WXSTRING && wxUSE_UNICODE_UTF8
+
   // wxWidgets version 1 compatibility functions
 
   // use Mid()
@@ -2183,6 +2375,17 @@ public:
   // int sprintf(const wxString& format, ...) WX_ATTRIBUTE_PRINTF_2;
   WX_DEFINE_VARARG_FUNC(int, sprintf, 1, (const wxFormatString&),
                         DoPrintfWchar, DoPrintfUtf8)
+#ifdef __WATCOMC__
+  // workaround for http://bugzilla.openwatcom.org/show_bug.cgi?id=351
+  WX_VARARG_WATCOM_WORKAROUND(int, sprintf, 1, (const wxString&),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(int, sprintf, 1, (const wxCStrData&),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(int, sprintf, 1, (const char*),
+                              (wxFormatString(f1)));
+  WX_VARARG_WATCOM_WORKAROUND(int, sprintf, 1, (const wchar_t*),
+                              (wxFormatString(f1)));
+#endif
 #endif // wxNEEDS_WXSTRING_PRINTF_MIXIN
 
     // use Cmp()
@@ -2191,10 +2394,14 @@ public:
 
     // use length()
   size_t Length() const { return length(); }
+    // Count the number of characters
+  int Freq(wxUniChar ch) const;
     // use MakeLower
   void LowerCase() { MakeLower(); }
     // use MakeUpper
   void UpperCase() { MakeUpper(); }
+    // use Trim except that it doesn't change this string
+  wxString Strip(stripType w = trailing) const;
 
     // use Find (more general variants not yet supported)
   size_t Index(const wxChar* psz) const { return Find(psz); }
@@ -2227,6 +2434,28 @@ public:
     // take all characters from first to last
   wxString(const_iterator first, const_iterator last)
       : m_impl(first.impl(), last.impl()) { }
+#if WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
+    // the 2 overloads below are for compatibility with the existing code using
+    // pointers instead of iterators
+  wxString(const char *first, const char *last)
+  {
+      SubstrBufFromMB str(ImplStr(first, last - first));
+      m_impl.assign(str.data, str.len);
+  }
+  wxString(const wchar_t *first, const wchar_t *last)
+  {
+      SubstrBufFromWC str(ImplStr(first, last - first));
+      m_impl.assign(str.data, str.len);
+  }
+    // and this one is needed to compile code adding offsets to c_str() result
+  wxString(const wxCStrData& first, const wxCStrData& last)
+      : m_impl(CreateConstIterator(first).impl(),
+               CreateConstIterator(last).impl())
+  {
+      wxASSERT_MSG( first.m_str == last.m_str,
+                    wxT("pointers must be into the same string") );
+  }
+#endif // WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
 
   // lib.string.modifiers
     // append elements str[pos], ..., str[pos+n]
@@ -2333,6 +2562,14 @@ public:
       m_impl.append(first.impl(), last.impl());
       return *this;
   }
+#if WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
+  wxString& append(const char *first, const char *last)
+    { return append(first, last - first); }
+  wxString& append(const wchar_t *first, const wchar_t *last)
+    { return append(first, last - first); }
+  wxString& append(const wxCStrData& first, const wxCStrData& last)
+    { return append(CreateConstIterator(first), CreateConstIterator(last)); }
+#endif // WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
 
     // same as `this_string = str'
   wxString& assign(const wxString& str)
@@ -2464,6 +2701,14 @@ public:
 
       return *this;
   }
+#if WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
+  wxString& assign(const char *first, const char *last)
+    { return assign(first, last - first); }
+  wxString& assign(const wchar_t *first, const wchar_t *last)
+    { return assign(first, last - first); }
+  wxString& assign(const wxCStrData& first, const wxCStrData& last)
+    { return assign(CreateConstIterator(first), CreateConstIterator(last)); }
+#endif // WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
 
     // string comparison
   int compare(const wxString& str) const;
@@ -2574,6 +2819,15 @@ public:
 
       m_impl.insert(it.impl(), first.impl(), last.impl());
   }
+
+#if WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
+  void insert(iterator it, const char *first, const char *last)
+    { insert(it - begin(), first, last - first); }
+  void insert(iterator it, const wchar_t *first, const wchar_t *last)
+    { insert(it - begin(), first, last - first); }
+  void insert(iterator it, const wxCStrData& first, const wxCStrData& last)
+    { insert(it, CreateConstIterator(first), CreateConstIterator(last)); }
+#endif // WXWIN_COMPATIBILITY_STRING_PTR_AS_ITER
 
   void insert(iterator it, size_type n, wxUniChar ch)
   {
@@ -3502,10 +3756,12 @@ public:
         : m_str(str), m_buf(NULL), m_len(0), m_lenSet(false)
     {
         m_buf = m_str.DoGetWriteBuf(lenWanted);
+        wxASSERT(m_buf != NULL);
     }
 
     ~wxStringInternalBufferLength()
     {
+        wxASSERT(m_lenSet);
         m_str.DoUngetWriteBuf(m_len);
     }
 
@@ -3575,6 +3831,7 @@ public:
 
     ~wxStringTypeBufferLengthBase()
     {
+        wxASSERT_MSG( this->m_lenSet, "forgot to call SetLength()" );
     }
 
     void SetLength(size_t length) { m_len = length; m_lenSet = true; }
@@ -3690,6 +3947,8 @@ public:
     {
         wxMBConvStrictUTF8 conv;
         size_t wlen = conv.ToWChar(NULL, 0, m_buf);
+        wxCHECK_RET( wlen != wxCONV_FAILED, "invalid UTF-8 data in string buffer?" );
+
         wxStringInternalBuffer wbuf(m_str, wlen);
         conv.ToWChar(wbuf, wlen, m_buf);
     }
@@ -3706,8 +3965,12 @@ public:
         : wxStringTypeBufferLengthBase<char>(str, lenWanted) {}
     ~wxUTF8StringBufferLength()
     {
+        wxCHECK_RET(m_lenSet, "length not set");
+
         wxMBConvStrictUTF8 conv;
         size_t wlen = conv.ToWChar(NULL, 0, m_buf, m_len);
+        wxCHECK_RET( wlen != wxCONV_FAILED, "invalid UTF-8 data in string buffer?" );
+
         wxStringInternalBufferLength wbuf(m_str, wlen);
         conv.ToWChar(wbuf, wlen, m_buf, m_len);
         wbuf.SetLength(wlen);
@@ -3849,7 +4112,9 @@ wxDEFINE_ALL_COMPARISONS(const char *, const wxCStrData&, wxCMP_CHAR_CSTRDATA)
 WXDLLIMPEXP_BASE wxSTD ostream& operator<<(wxSTD ostream&, const wxString&);
 WXDLLIMPEXP_BASE wxSTD ostream& operator<<(wxSTD ostream&, const wxCStrData&);
 WXDLLIMPEXP_BASE wxSTD ostream& operator<<(wxSTD ostream&, const wxScopedCharBuffer&);
+#ifndef __BORLANDC__
 WXDLLIMPEXP_BASE wxSTD ostream& operator<<(wxSTD ostream&, const wxScopedWCharBuffer&);
+#endif
 
 #if wxUSE_UNICODE && defined(HAVE_WOSTREAM)
 
@@ -3953,7 +4218,8 @@ inline wxUniChar wxCStrData::operator*() const
 {
     if ( m_str->empty() )
         return wxUniChar(wxT('\0'));
-    return (*m_str)[m_offset];
+    else
+        return (*m_str)[m_offset];
 }
 
 inline wxUniChar wxCStrData::operator[](size_t n) const
@@ -4035,5 +4301,28 @@ void wxStringIteratorNode::clear()
     m_str = NULL;
 }
 #endif // wxUSE_UNICODE_UTF8
+
+#if WXWIN_COMPATIBILITY_2_8
+    // lot of code out there doesn't explicitly include wx/crt.h, but uses
+    // CRT wrappers that are now declared in wx/wxcrt.h and wx/wxcrtvararg.h,
+    // so let's include this header now that wxString is defined and it's safe
+    // to do it:
+    #include "wx/crt.h"
+#endif
+
+// ----------------------------------------------------------------------------
+// Checks on wxString characters
+// ----------------------------------------------------------------------------
+
+template<bool (T)(const wxUniChar& c)>
+    inline bool wxStringCheck(const wxString& val)
+    {
+        for ( wxString::const_iterator i = val.begin();
+              i != val.end();
+              ++i )
+            if (T(*i) == 0)
+                return false;
+        return true;
+    }
 
 #endif  // _WX_WXSTRING_H_

@@ -15,8 +15,9 @@
 
 #pragma once
 
-#include "Utilities/EventSource.h"
-#include "Utilities/pxEvents.h"
+#include "common/EventSource.h"
+#include "gui/IniInterface.h"
+#include "gui/pxEvents.h"
 
 enum CoreThreadStatus
 {
@@ -51,7 +52,14 @@ struct AppEventInfo
 
 struct AppSettingsEventInfo : AppEventInfo
 {
-	AppSettingsEventInfo(AppEventType evt_type );
+	IniInterface&	m_ini;
+
+	AppSettingsEventInfo( IniInterface&	ini, AppEventType evt_type );
+
+	IniInterface& GetIni() const
+	{
+		return const_cast<IniInterface&>(m_ini);
+	}
 };
 
 // --------------------------------------------------------------------------------------
@@ -89,7 +97,18 @@ class IEventListener_AppStatus : public IEventDispatcher<AppEventInfo>
 {
 public:
 	typedef AppEventInfo EvtParams;
+
+public:
 	virtual ~IEventListener_AppStatus() = default;
+
+	virtual void DispatchEvent( const AppEventInfo& evtinfo );
+
+protected:
+	virtual void AppStatusEvent_OnUiSettingsLoadSave( const AppSettingsEventInfo& evtinfo ) {}
+	virtual void AppStatusEvent_OnVmSettingsLoadSave( const AppSettingsEventInfo& evtinfo ) {}
+
+	virtual void AppStatusEvent_OnSettingsApplied() {}
+	virtual void AppStatusEvent_OnExit() {}
 };
 
 class EventListener_AppStatus : public IEventListener_AppStatus
@@ -98,6 +117,74 @@ public:
 	EventListener_AppStatus();
 	virtual ~EventListener_AppStatus();
 };
+
+// --------------------------------------------------------------------------------------
+//  EventListenerHelpers (CoreThread / AppStatus)
+// --------------------------------------------------------------------------------------
+// Welcome to the awkward world of C++ multi-inheritence.  wxWidgets' Connect() system is
+// incompatible because of limitations in C++ class member function pointers, so we need
+// this second layer class to act as a bridge between the event system and the class's
+// handler implementations.
+//
+// Explained in detail: The class that wants to listen to shit will implement its expected
+// virtual overrides from the listener classes (OnCoreThread_Started, for example), and then
+// it adds an instance of the EventListenerHelper_CoreThread class to itself, instead of
+// *inheriting* from it.  Thusly, the Helper gets initialized when the class is created,
+// and when events are dispatched to the listener, it forwards the event to the main class.
+//  --air
+
+template< typename TypeToDispatchTo >
+class EventListenerHelper_CoreThread : public EventListener_CoreThread
+{
+public:
+	TypeToDispatchTo&	Owner;
+
+public:
+	EventListenerHelper_CoreThread( TypeToDispatchTo& dispatchTo )
+		: Owner( dispatchTo ) { }
+
+	EventListenerHelper_CoreThread( TypeToDispatchTo* dispatchTo )
+		: Owner( *dispatchTo )
+	{
+		pxAssert(dispatchTo != NULL);
+	}
+
+	virtual ~EventListenerHelper_CoreThread() = default;
+
+protected:
+	void CoreThread_OnIndeterminate()	{ Owner.OnCoreThread_Indeterminate(); }
+	void CoreThread_OnStarted()			{ Owner.OnCoreThread_Started(); }
+	void CoreThread_OnResumed()			{ Owner.OnCoreThread_Resumed(); }
+	void CoreThread_OnSuspended()		{ Owner.OnCoreThread_Suspended(); }
+	void CoreThread_OnReset()			{ Owner.OnCoreThread_Reset(); }
+	void CoreThread_OnStopped()			{ Owner.OnCoreThread_Stopped(); }
+};
+
+template< typename TypeToDispatchTo >
+class EventListenerHelper_AppStatus : public EventListener_AppStatus
+{
+public:
+	TypeToDispatchTo&	Owner;
+
+public:
+	EventListenerHelper_AppStatus( TypeToDispatchTo& dispatchTo )
+		: Owner( dispatchTo ) { }
+
+	EventListenerHelper_AppStatus( TypeToDispatchTo* dispatchTo )
+		: Owner( *dispatchTo )
+	{
+		pxAssert(dispatchTo != NULL);
+	}
+
+	virtual ~EventListenerHelper_AppStatus() = default;
+
+protected:
+	virtual void AppStatusEvent_OnUiSettingsLoadSave( const AppSettingsEventInfo& evtinfo ) { Owner.AppStatusEvent_OnUiSettingsLoadSave( evtinfo ); }
+	virtual void AppStatusEvent_OnVmSettingsLoadSave( const AppSettingsEventInfo& evtinfo ) { Owner.AppStatusEvent_OnVmSettingsLoadSave( evtinfo ); }
+	virtual void AppStatusEvent_OnSettingsApplied() { Owner.AppStatusEvent_OnSettingsApplied(); }
+	virtual void AppStatusEvent_OnExit() { Owner.AppStatusEvent_OnExit(); }
+};
+
 
 // --------------------------------------------------------------------------------------
 //  CoreThreadStatusEvent
@@ -116,5 +203,9 @@ public:
 	explicit CoreThreadStatusEvent( CoreThreadStatus evt, SynchronousActionState* sema=NULL );
 	explicit CoreThreadStatusEvent( CoreThreadStatus evt, SynchronousActionState& sema );
 
+	void SetEventType( CoreThreadStatus evt ) { m_evt = evt; }
 	CoreThreadStatus GetEventType() { return m_evt; }
+
+protected:
+	void InvokeEvent();
 };

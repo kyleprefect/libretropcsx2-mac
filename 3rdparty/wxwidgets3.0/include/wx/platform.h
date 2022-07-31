@@ -59,7 +59,7 @@
 
 #if defined(__WINDOWS__)
     /* Select wxMSW under Windows if no other port is specified. */
-#   if !defined(__WXMSW__)
+#   if !defined(__WXMSW__) && !defined(__WXMOTIF__) && !defined(__WXGTK__) && !defined(__WXX11__)
 #       define __WXMSW__
 #   endif
 
@@ -89,6 +89,82 @@
 
 #endif /* __WINDOWS__ */
 
+/*
+    Don't use widget toolkit specific code in non-GUI code in the library
+    itself to ensure that the same base library is used for both MSW and GTK
+    ports. But keep __WXMSW__ defined for (console) applications using
+    wxWidgets for compatibility.
+ */
+#if defined(WXBUILDING) && defined(wxUSE_GUI) && !wxUSE_GUI
+#   ifdef __WXMSW__
+#       undef __WXMSW__
+#   endif
+#   ifdef __WXGTK__
+#       undef __WXGTK__
+#   endif
+#endif
+
+#if defined(__WXGTK__) && defined(__WINDOWS__)
+
+#   ifdef __WXMSW__
+#       undef __WXMSW__
+#   endif
+
+#endif /* __WXGTK__ && __WINDOWS__ */
+
+/* detect MS SmartPhone */
+#if defined( WIN32_PLATFORM_WFSP )
+#   ifndef __SMARTPHONE__
+#       define __SMARTPHONE__
+#   endif
+#   ifndef __WXWINCE__
+#       define __WXWINCE__
+#   endif
+#endif
+
+/* detect PocketPC */
+#if defined( WIN32_PLATFORM_PSPC )
+#   ifndef __POCKETPC__
+#       define __POCKETPC__
+#   endif
+#   ifndef __WXWINCE__
+#       define __WXWINCE__
+#   endif
+#endif
+
+/* detect Standard WinCE SDK */
+#if defined( WCE_PLATFORM_STANDARDSDK )
+#   ifndef __WINCE_STANDARDSDK__
+#       define __WINCE_STANDARDSDK__
+#   endif
+#   ifndef __WXWINCE__
+#       define __WXWINCE__
+#   endif
+#endif
+
+#if defined(_WIN32_WCE) && !defined(WIN32_PLATFORM_WFSP) && !defined(WIN32_PLATFORM_PSPC)
+#   if (_WIN32_WCE >= 400)
+#       ifndef __WINCE_NET__
+#           define __WINCE_NET__
+#       endif
+#   elif (_WIN32_WCE >= 200)
+#       ifndef __HANDHELDPC__
+#           define __HANDHELDPC__
+#       endif
+#   endif
+#   ifndef __WXWINCE__
+#       define __WXWINCE__
+#   endif
+#endif
+
+#if defined(__WXWINCE__) && defined(_MSC_VER) && (_MSC_VER == 1201)
+    #define __EVC4__
+#endif
+
+#if defined(__POCKETPC__) || defined(__SMARTPHONE__) || defined(__WXGPE__)
+#   define __WXHANDHELD__
+#endif
+
 #ifdef __ANDROID__
 #   define __WXANDROID__
 #   include "wx/android/config_android.h"
@@ -105,6 +181,14 @@
    the compiler macros above as msvc/wx/setup.h relies on them under Windows.
  */
 #include "wx/setup.h"
+
+/*
+   Convenience for any optional classes that use the wxAnyButton base class.
+ */
+#if wxUSE_TOGGLEBTN || wxUSE_BUTTON
+    #define wxHAS_ANY_BUTTON
+#endif
+
 
 /*
    Hardware platform detection.
@@ -163,17 +247,102 @@
 #endif /* wxUSE_UNICODE */
 
 
-#if defined(__UNIX__) || defined(__unix) || defined(__unix__) || \
+/*
+   test for old versions of Borland C, normally need at least 5.82, Turbo
+   explorer, available for free at http://www.turboexplorer.com/downloads
+*/
+
+
+/*
+    Older versions of Borland C have some compiler bugs that need
+    workarounds. Mostly pertains to the free command line compiler 5.5.1.
+*/
+#if defined(__BORLANDC__) && (__BORLANDC__ <= 0x551)
+    /*
+        The Borland free compiler is unable to handle overloaded enum
+        comparisons under certain conditions e.g. when any class has a
+        conversion ctor for an integral type and there's an overload to
+        compare between an integral type and that class type.
+    */
+#   define wxCOMPILER_NO_OVERLOAD_ON_ENUM
+
+    /*
+        This is needed to overcome bugs in 5.5.1 STL, linking errors will
+        result if it is not defined.
+     */
+#   define _RWSTD_COMPILE_INSTANTIATE
+
+    /*
+        Preprocessor in older Borland compilers have major problems
+        concatenating with ##. Specifically, if the string operands being
+        concatenated have special meaning (e.g. L"str", 123i64 etc)
+        then ## will not concatenate the operands correctly.
+
+        As a workaround, define wxPREPEND* and wxAPPEND* without using
+        wxCONCAT_HELPER.
+    */
+#   define wxCOMPILER_BROKEN_CONCAT_OPER
+#endif /* __BORLANDC__ */
+
+/*
+   OS: first of all, test for MS-DOS platform. We must do this before testing
+       for Unix, because DJGPP compiler defines __unix__ under MS-DOS
+ */
+#if defined(__GO32__) || defined(__DJGPP__) || defined(__DOS__)
+#    ifndef __DOS__
+#        define __DOS__
+#    endif
+    /* size_t is the same as unsigned int for Watcom 11 compiler, */
+    /* so define it if it hadn't been done by configure yet */
+#    if !defined(wxSIZE_T_IS_UINT) && !defined(wxSIZE_T_IS_ULONG)
+#        ifdef __WATCOMC__
+#            define wxSIZE_T_IS_UINT
+#        endif
+#        ifdef __DJGPP__
+#            define wxSIZE_T_IS_ULONG
+#        endif
+#    endif
+
+/*
+   OS: then test for generic Unix defines, then for particular flavours and
+       finally for Unix-like systems
+       Mac OS X matches this case (__MACH__), prior Mac OS do not.
+ */
+#elif defined(__UNIX__) || defined(__unix) || defined(__unix__) || \
       defined(____SVR4____) || defined(__LINUX__) || defined(__sgi) || \
       defined(__hpux) || defined(__sun) || defined(__SUN__) || defined(_AIX) || \
-      defined(__BEOS__) || defined(__MACH__)
+      defined(__EMX__) || defined(__VMS) || defined(__BEOS__) || defined(__MACH__)
 
 #    define __UNIX_LIKE__
 
+#    ifdef __SGI__
+#        ifdef __GNUG__
+#        else /* !gcc */
+            /*
+               Note I use the term __SGI_CC__ for both cc and CC, its not a good
+               idea to mix gcc and cc/CC, the name mangling is different
+             */
+#            define __SGI_CC__
+#        endif /* gcc/!gcc */
+
+        /* system headers use this symbol and not __cplusplus in some places */
+#       ifndef _LANGUAGE_C_PLUS_PLUS
+#           define _LANGUAGE_C_PLUS_PLUS
+#       endif
+#    endif  /* SGI */
+
+#    ifdef __EMX__
+#        define OS2EMX_PLAIN_CHAR
+#    endif
 #    if defined(__INNOTEK_LIBC__)
         /* Ensure visibility of strnlen declaration */
 #        define _GNU_SOURCE
 #    endif
+
+    /* define __HPUX__ for HP-UX where standard macro is __hpux */
+#    if defined(__hpux) && !defined(__HPUX__)
+#        define __HPUX__
+#    endif /* HP-UX */
 
     /*  All of these should already be defined by including configure-
         generated setup.h but we wish to support Xcode compilation without
@@ -200,6 +369,32 @@
 #        endif
 #    endif
 
+/*
+   OS: OS/2
+ */
+#elif defined(__OS2__)
+
+    /* wxOS2 vs. non wxOS2 ports on OS2 platform */
+#    if !defined(__WXMOTIF__) && !defined(__WXGTK__) && !defined(__WXX11__)
+#        ifndef __WXPM__
+#            define __WXPM__
+#        endif
+#    endif
+
+#    if defined(__IBMCPP__)
+#        define __VISAGEAVER__ __IBMCPP__
+#    endif
+
+    /* Place other OS/2 compiler environment defines here */
+#    if defined(__VISAGECPP__)
+        /* VisualAge is the only thing that understands _Optlink */
+#        define LINKAGEMODE _Optlink
+#    endif
+#    define wxSIZE_T_IS_UINT
+
+/*
+   OS: Windows
+ */
 #elif defined(__WINDOWS__)
 
     /* to be changed for Win64! */
@@ -224,7 +419,26 @@
 #    define __UNIX__
 #endif /* Unix */
 
-#if (defined(__GNUC__) && __GNUC__ < 3)
+#if defined(__WXMOTIF__) || defined(__WXX11__)
+#    define __X__
+#endif
+
+/*
+   We get "Large Files (ILP32) not supported in strict ANSI mode." #error
+   from HP-UX standard headers when compiling with g++ without this:
+ */
+#if defined(__HPUX__) && !defined(__STDC_EXT__)
+#   define __STDC_EXT__ 1
+#endif
+
+/* Force linking against required libraries under Windows: */
+#ifdef __WXWINCE__
+#   include "wx/msw/wince/libraries.h"
+#elif defined __WINDOWS__
+#   include "wx/msw/libraries.h"
+#endif
+
+#if defined(__BORLANDC__) || (defined(__GNUC__) && __GNUC__ < 3)
 #define wxNEEDS_CHARPP
 #endif
 
@@ -233,8 +447,12 @@
     _UNICODE macros as it includes _mingw.h which relies on them being set.
  */
 #if ( defined( __GNUWIN32__ ) || defined( __MINGW32__ ) || \
-    ( defined( __CYGWIN__ ) && defined( __WINDOWS__ ) ) \
-       )
+    ( defined( __CYGWIN__ ) && defined( __WINDOWS__ ) ) || \
+      wxCHECK_WATCOM_VERSION(1,0) ) && \
+    !defined(__DOS__) && \
+    !defined(__WXPM__) && \
+    !defined(__WXMOTIF__) && \
+    !defined(__WXX11__)
 #    include "wx/msw/gccpriv.h"
 #else
 #    undef wxCHECK_W32API_VERSION
@@ -297,7 +515,7 @@
     checking for any OS X port (Carbon and Cocoa) and __WXMAC__ is an old name
     for it.
  */
-#if defined(__WXOSX_CARBON__)
+#if defined(__WXOSX_CARBON__) || defined(__WXOSX_COCOA__) || defined(__WXOSX_IPHONE__)
 #   ifndef __WXOSX__
 #       define __WXOSX__ 1
 #   endif
@@ -314,6 +532,9 @@
 #           error "incorrect SDK for an iPhone build"
 #       endif
 #   else
+#       if wxUSE_GUI && !(defined(__WXOSX_CARBON__) || defined(__WXOSX_COCOA__))
+#           error "one of __WXOSX_IPHONE__, __WXOSX_CARBON__ or __WXOSX_COCOA__ must be defined for the GUI build"
+#       endif
 #       if !( defined(TARGET_OS_MAC) && TARGET_OS_MAC )
 #           error "incorrect SDK for a Mac OS X build"
 #       endif
@@ -345,14 +566,51 @@
 #endif
 
 /*
+    __WXOSX_OR_COCOA__ is a common define to wxOSX (Carbon or Cocoa) and wxCocoa ports under OS X.
+
+    DO NOT use this define in base library code.  Although wxMac has its own
+    private base library (and thus __WXOSX_OR_COCOA__,__WXMAC__ and related defines are
+    valid there), wxCocoa shares its library with other ports like wxGTK and wxX11.
+
+    To keep wx authors from screwing this up, only enable __WXOSX_OR_COCOA__ for wxCocoa when
+    not compiling the base library.  We determine this by first checking if
+    wxUSE_BASE is not defined.  If it is not defined, then we're not buildling
+    the base library, and possibly not building wx at all (but actually building
+    user code that's using wx). If it is defined then we must check to make sure
+    it is not true.  If it is true, we're building base.
+
+    If you want it in the common darwin base library then use __DARWIN__.  You
+    can use any Darwin-available libraries like CoreFoundation but please avoid
+    using OS X libraries like Carbon or CoreServices.
+
+ */
+#if defined(__WXOSX__) || (defined(__WXCOCOA__) && (!defined(wxUSE_BASE) || !wxUSE_BASE))
+#   define __WXOSX_OR_COCOA__ 1
+#endif
+
+/*
    check the consistency of the settings in setup.h: note that this must be
    done after setting wxUSE_UNICODE correctly as it is used in wx/chkconf.h
    and after defining the compiler macros which are used in it too
  */
 #include "wx/chkconf.h"
 
-#undef wxUSE_IOSTREAMH
-#define wxUSE_IOSTREAMH 0
+
+/*
+   some compilers don't support iostream.h any longer, while some of theme
+   are not updated with <iostream> yet, so override the users setting here
+   in such case.
+ */
+#if defined(_MSC_VER) && (_MSC_VER >= 1310)
+#    undef wxUSE_IOSTREAMH
+#    define wxUSE_IOSTREAMH 0
+#elif defined(__DMC__) || defined(__WATCOMC__)
+#    undef wxUSE_IOSTREAMH
+#    define wxUSE_IOSTREAMH 1
+#elif defined(__MINGW32__)
+#    undef wxUSE_IOSTREAMH
+#    define wxUSE_IOSTREAMH 0
+#endif /* compilers with/without iostream.h */
 
 /*
    old C++ headers (like <iostream.h>) declare classes in the global namespace
@@ -367,5 +625,82 @@
 #else
 #    define wxSTD
 #endif
+
+/* On OpenVMS with the most recent HP C++ compiler some function (i.e. wscanf)
+ * are only available in the std-namespace. (BUG???)
+ */
+#if defined(  __VMS ) && (__DECCXX_VER >= 70100000) && !defined(__STD_CFRONT) && !defined( __NONAMESPACE_STD )
+# define wxVMS_USE_STD std::
+#else
+# define wxVMS_USE_STD
+#endif
+
+#ifdef __VMS
+#define XtDisplay XTDISPLAY
+#ifdef __WXMOTIF__
+#define XtParent XTPARENT
+#define XtScreen XTSCREEN
+#define XtWindow XTWINDOW
+#endif
+#endif
+
+/* Choose which method we will use for updating menus
+ * - in OnIdle, or when we receive a wxEVT_MENU_OPEN event.
+ * Presently, only Windows, OS X and GTK+ support wxEVT_MENU_OPEN.
+ */
+#ifndef wxUSE_IDLEMENUUPDATES
+#    if (defined(__WXMSW__) || defined(__WXGTK__) || defined(__WXOSX__)) && !defined(__WXUNIVERSAL__)
+#        define wxUSE_IDLEMENUUPDATES 0
+#    else
+#        define wxUSE_IDLEMENUUPDATES 1
+#    endif
+#endif
+
+/*
+ * Define symbols that are not yet in
+ * configure or possibly some setup.h files.
+ * They will need to be added.
+ */
+
+#ifndef wxUSE_FILECONFIG
+#    if wxUSE_CONFIG && wxUSE_TEXTFILE
+#        define wxUSE_FILECONFIG 1
+#    else
+#        define wxUSE_FILECONFIG 0
+#    endif
+#endif
+
+#ifndef wxUSE_HOTKEY
+#    define wxUSE_HOTKEY 0
+#endif
+
+#if !defined(wxUSE_WXDIB) && defined(__WXMSW__)
+#    define wxUSE_WXDIB 1
+#endif
+
+/*
+    Optionally supported C++ features.
+ */
+
+/*
+    RTTI: if it is disabled in build/msw/makefile.* then this symbol will
+    already be defined but it's also possible to do it from configure (with
+    g++) or by editing project files with MSVC so test for it here too.
+ */
+#ifndef wxNO_RTTI
+    /*
+        Only 4.3 defines __GXX_RTTI by default so its absence is not an
+        indication of disabled RTTI with the previous versions.
+     */
+#   if wxCHECK_GCC_VERSION(4, 3)
+#       ifndef __GXX_RTTI
+#           define wxNO_RTTI
+#       endif
+#   elif defined(_MSC_VER)
+#       ifndef _CPPRTTI
+#           define wxNO_RTTI
+#       endif
+#   endif
+#endif /* wxNO_RTTI */
 
 #endif /* _WX_PLATFORM_H_ */

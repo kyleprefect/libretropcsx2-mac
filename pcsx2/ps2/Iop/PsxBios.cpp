@@ -14,7 +14,11 @@
 */
 
 #include "PrecompiledHeader.h"
-#include "IopCommon.h"
+#include "Common.h"
+#include "R3000A.h"
+#include "IopMem.h"
+
+#include "fmt/core.h"
 
 static std::string psxout_buf;
 
@@ -37,25 +41,30 @@ static void flush_stdout(bool closing = false)
             if (!psxout_buf.compare(0, linelen, psxout_last))
                 psxout_repeat++;
             else {
-                if (psxout_repeat)
+                if (psxout_repeat) {
+                    iopConLog(fmt::format("[{} more]\n", psxout_repeat));
                     psxout_repeat = 0;
+                }
                 psxout_last = psxout_buf.substr(0, linelen);
+                iopConLog(ShiftJIS_ConvertString(psxout_last.data()));
             }
         }
         psxout_buf.erase(0, linelen);
     }
-    if (closing && psxout_repeat)
+    if (closing && psxout_repeat) {
+        iopConLog(fmt::format("[{} more]\n", psxout_repeat));
         psxout_repeat = 0;
+    }
 }
 
-void psxBiosReset(void)
+void psxBiosReset()
 {
     flush_stdout(true);
 }
 
-// Called for Playstation BIOS calls at 0xA0, 0xB0 and 0xC0 in kernel reserved memory (seemingly by actually calling those addresses)
+// Called for PlayStation BIOS calls at 0xA0, 0xB0 and 0xC0 in kernel reserved memory (seemingly by actually calling those addresses)
 // Returns true if we internally process the call, not that we're likely to do any such thing
-bool __fastcall psxBiosCall()
+bool psxBiosCall()
 {
     // TODO: Tracing
     // TODO (maybe, psx is hardly a priority): HLE framework
@@ -81,6 +90,7 @@ bool __fastcall psxBiosCall()
             // putc(c, fd)
             if (psxRegs.GPR.n.a1 != 1)
                 return false;
+            [[fallthrough]];
         // fd=1, fall through to putchar
         case 0xa3c:
         case 0xb3d:

@@ -18,9 +18,15 @@
 
 #include "wx/wxprec.h"
 
+#ifdef    __BORLANDC__
+    #pragma hdrstop
+#endif  //__BORLANDC__
+
 #ifndef WX_PRECOMP
     #include "wx/app.h"
     #include "wx/filefn.h"
+    #include "wx/log.h"
+    #include "wx/intl.h"
     #include "wx/module.h"
 #endif
 
@@ -28,10 +34,25 @@
 #include "wx/thread.h"
 
 #include "wx/scopedptr.h"
+#include "wx/except.h"
 
 #if defined(__WINDOWS__)
     #include "wx/msw/private.h"
-#endif
+    #include "wx/msw/msvcrt.h"
+
+    #ifdef wxCrtSetDbgFlag
+        static struct EnableMemLeakChecking
+        {
+            EnableMemLeakChecking()
+            {
+                // check for memory leaks on program exit (another useful flag
+                // is _CRTDBG_DELAY_FREE_MEM_DF which doesn't free deallocated
+                // memory which may be used to simulate low-memory condition)
+                wxCrtSetDbgFlag(_CRTDBG_LEAK_CHECK_DF);
+            }
+        } gs_enableLeakChecks;
+    #endif // wxCrtSetDbgFlag
+#endif // __WINDOWS__
 
 #if wxUSE_UNICODE && defined(__WXOSX__)
     #include <locale.h>
@@ -47,7 +68,8 @@ class wxDummyConsoleApp : public wxAppConsole
 public:
     wxDummyConsoleApp() { }
 
-    virtual int OnRun() { return 0; }
+    virtual int OnRun() { wxFAIL_MSG( wxT("unreachable code") ); return 0; }
+    virtual bool DoYield(bool, long) { return true; }
 
     wxDECLARE_NO_COPY_CLASS(wxDummyConsoleApp);
 };
@@ -94,6 +116,15 @@ public:
 private:
     wxAppConsole *m_app;
 };
+
+// ----------------------------------------------------------------------------
+// private functions
+// ----------------------------------------------------------------------------
+
+// suppress warnings about unused variables
+static inline void Use(void *) { }
+
+#define WX_SUPPRESS_UNUSED_WARN(x) Use(&x)
 
 // ----------------------------------------------------------------------------
 // initialization data
@@ -160,7 +191,11 @@ static void ConvertArgsToUnicode(int argc, char **argv)
 #else
         wxWCharBuffer buf(wxConvLocal.cMB2WX(argv[i]));
 #endif
-        if ( !buf ) { }
+        if ( !buf )
+        {
+            wxLogWarning(_("Command line argument %d couldn't be converted to Unicode and will be ignored."),
+                         i);
+        }
         else // converted ok
         {
             gs_initData.argvOrig[wargc] = gs_initData.argv[wargc] = wxStrdup(buf);
@@ -209,6 +244,26 @@ static bool DoCommonPreInit()
     setlocale(LC_CTYPE, "UTF-8");
 #endif // wxUSE_UNICODE && defined(__WXOSX__)
 
+#if wxUSE_LOG
+    // Reset logging in case we were cleaned up and are being reinitialized.
+    wxLog::DoCreateOnDemand();
+
+    // force wxLog to create a log target now: we do it because wxTheApp
+    // doesn't exist yet so wxLog will create a special log target which is
+    // safe to use even when the GUI is not available while without this call
+    // we could create wxApp in wxEntryStart() below, then log an error about
+    // e.g. failure to establish connection to the X server and wxLog would
+    // send it to wxLogGui (because wxTheApp does exist already) which, of
+    // course, can't be used in this case
+    //
+    // notice also that this does nothing if the user had set up a custom log
+    // target before -- which is fine as we want to give him this possibility
+    // (as it's impossible to override logging by overriding wxAppTraits::
+    // CreateLogTarget() before wxApp is created) and we just assume he knows
+    // what he is doing
+    wxLog::GetActiveTarget();
+#endif // wxUSE_LOG
+
 #ifdef __WINDOWS__
     // GUI applications obtain HINSTANCE in their WinMain() but we also need to
     // initialize the global wxhInstance variable for the console programs as
@@ -228,7 +283,10 @@ static bool DoCommonPostInit()
     wxModule::RegisterModules();
 
     if ( !wxModule::InitializeModules() )
+    {
+        wxLogError(_("Initialization failed in post init, aborting."));
         return false;
+    }
 
     return true;
 }
@@ -278,6 +336,7 @@ bool wxEntryStart(int& argc, wxChar **argv)
     // remember, possibly modified (e.g. due to removal of toolkit-specific
     // parameters), command line arguments in member variables
     app->argc = argc;
+    app->argv = argv;
 
     wxCallAppCleanup callAppCleanup(app.get());
 
@@ -294,6 +353,14 @@ bool wxEntryStart(int& argc, wxChar **argv)
 
     // and the cleanup object from doing cleanup
     callAppCleanup.Dismiss();
+
+#if wxUSE_LOG
+    // now that we have a valid wxApp (wxLogGui would have crashed if we used
+    // it before now), we can delete the temporary sink we had created for the
+    // initialization messages -- the next time logging function is called, the
+    // sink will be recreated but this time wxAppTraits will be used
+    delete wxLog::SetActiveTarget(NULL);
+#endif // wxUSE_LOG
 
     return true;
 }
@@ -321,6 +388,22 @@ bool wxEntryStart(int& argc, char **argv)
 // clean up
 // ----------------------------------------------------------------------------
 
+// cleanup done before destroying wxTheApp
+static void DoCommonPreCleanup()
+{
+#if wxUSE_LOG
+    // flush the logged messages if any and don't use the current probably
+    // unsafe log target any more: the default one (wxLogGui) can't be used
+    // after the resources are freed which happens when we return and the user
+    // supplied one might be even more unsafe (using any wxWidgets GUI function
+    // is unsafe starting from now)
+    //
+    // notice that wxLog will still recreate a default log target if any
+    // messages are logged but that one will be safe to use until the very end
+    delete wxLog::SetActiveTarget(NULL);
+#endif // wxUSE_LOG
+}
+
 // cleanup done after destroying wxTheApp
 static void DoCommonPostCleanup()
 {
@@ -331,10 +414,33 @@ static void DoCommonPostCleanup()
 #if wxUSE_UNICODE
     FreeConvertedArgs();
 #endif // wxUSE_UNICODE
+
+    // use Set(NULL) and not Get() to avoid creating a message output object on
+    // demand when we just want to delete it
+    delete wxMessageOutput::Set(NULL);
+
+#if wxUSE_LOG
+    // call this first as it has a side effect: in addition to flushing all
+    // logs for this thread, it also flushes everything logged from other
+    // threads
+    wxLog::FlushActive();
+
+    // and now delete the last logger as well
+    //
+    // we still don't disable log target auto-vivification even if any log
+    // objects created now will result in memory leaks because it seems better
+    // to leak memory which doesn't matter much considering the application is
+    // exiting anyhow than to not show messages which could still be logged
+    // from the user code (e.g. static dtors and such)
+    delete wxLog::SetActiveTarget(NULL);
+#endif // wxUSE_LOG
 }
 
 void wxEntryCleanup()
 {
+    DoCommonPreCleanup();
+
+
     // delete the application object
     if ( wxTheApp )
     {
@@ -367,22 +473,39 @@ int wxEntryReal(int& argc, wxChar **argv)
     wxInitializer initializer(argc, argv);
 
     if ( !initializer.IsOk() )
-        return -1;
-
-    // app initialization
-    // don't call OnExit() if OnInit() failed
-    if ( !wxTheApp->CallOnInit() )
-	    return -1;
-
-    // ensure that OnExit() is called if OnInit() had succeeded
-    class CallOnExit
     {
-	    public:
-		    ~CallOnExit() { wxTheApp->OnExit(); }
-    } callOnExit;
+#if wxUSE_LOG
+        // flush any log messages explaining why we failed
+        delete wxLog::SetActiveTarget(NULL);
+#endif
+        return -1;
+    }
 
-    // app execution
-    return wxTheApp->OnRun();
+    wxTRY
+    {
+#if 0 // defined(__WXOSX__) && wxOSX_USE_COCOA_OR_IPHONE
+        // everything done in OnRun using native callbacks
+#else
+        // app initialization
+        if ( !wxTheApp->CallOnInit() )
+        {
+            // don't call OnExit() if OnInit() failed
+            return -1;
+        }
+
+        // ensure that OnExit() is called if OnInit() had succeeded
+        class CallOnExit
+        {
+        public:
+            ~CallOnExit() { wxTheApp->OnExit(); }
+        } callOnExit;
+
+        WX_SUPPRESS_UNUSED_WARN(callOnExit);
+#endif
+        // app execution
+        return wxTheApp->OnRun();
+    }
+    wxCATCH_ALL( wxTheApp->OnUnhandledException(); return -1; )
 }
 
 #if wxUSE_UNICODE

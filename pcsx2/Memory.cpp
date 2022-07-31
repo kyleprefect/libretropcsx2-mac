@@ -36,14 +36,61 @@ BIOS
 
 #include "PrecompiledHeader.h"
 
-#include "IopCommon.h"
+#include "IopHw.h"
 #include "GS.h"
 #include "VUmicro.h"
 #include "MTVU.h"
+#include "DEV9/DEV9.h"
 
 #include "ps2/HwInternal.h"
 #include "ps2/BiosTools.h"
 #include "SPU2/spu2.h"
+
+#include "common/AlignedMalloc.h"
+#include "common/PageFaultSource.h"
+
+#ifdef PCSX2_CORE
+#include "GSDumpReplayer.h"
+#endif
+
+#ifdef ENABLECACHE
+#include "Cache.h"
+#endif
+
+int MemMode = 0;		// 0 is Kernel Mode, 1 is Supervisor Mode, 2 is User Mode
+
+void memSetKernelMode() {
+	//Do something here
+	MemMode = 0;
+}
+
+void memSetSupervisorMode() {
+}
+
+void memSetUserMode() {
+
+}
+
+u16 ba0R16(u32 mem)
+{
+	//MEM_LOG("ba00000 Memory read16 address %x", mem);
+
+	if (mem == 0x1a000006) {
+		static int ba6;
+		ba6++;
+		if (ba6 == 3) ba6 = 0;
+		return ba6;
+	}
+	return 0;
+}
+
+#define CHECK_MEM(mem) //MyMemCheck(mem)
+
+void MyMemCheck(u32 mem)
+{
+    if( mem == 0x1c02f2a0 )
+        Console.WriteLn("yo; (mem == 0x1c02f2a0) in MyMemCheck...");
+}
 
 /////////////////////////////
 // REGULAR MEM START
@@ -74,7 +121,7 @@ static vtlbHandler
 	iopHw_by_page_08;
 
 
-static void memMapVUmicro(void)
+void memMapVUmicro()
 {
 	// VU0/VU1 micro mem (instructions)
 	// (Like IOP memory, these are generally only used by the EE Bios kernel during
@@ -95,13 +142,11 @@ static void memMapVUmicro(void)
 	// Note: In order for the below conditional to work correctly
 	// support needs to be coded to reset the memMappings when MTVU is
 	// turned off/on. For now we just always use the vu data handlers...
-	if (1||THREAD_VU1)
-		vtlb_MapHandler(vu1_data_mem,0x1100c000,0x00004000);
-	else
-		vtlb_MapBlock  (VU1.Mem,     0x1100c000,0x00004000);
+	if (1||THREAD_VU1) vtlb_MapHandler(vu1_data_mem,0x1100c000,0x00004000);
+	else               vtlb_MapBlock  (VU1.Mem,     0x1100c000,0x00004000);
 }
 
-static void memMapPhy(void)
+void memMapPhy()
 {
 	// Main memory
 	vtlb_MapBlock(eeMem->Main,	0x00000000,Ps2MemSize::MainRam);//mirrored on first 256 mb ?
@@ -148,48 +193,68 @@ static void memMapPhy(void)
 }
 
 //Why is this required ?
-static void memMapKernelMem(void)
+void memMapKernelMem()
 {
 	//lower 512 mb: direct map
+	//vtlb_VMap(0x00000000,0x00000000,0x20000000);
 	//0x8* mirror
 	vtlb_VMap(0x80000000, 0x00000000, _1mb*512);
 	//0xa* mirror
 	vtlb_VMap(0xA0000000, 0x00000000, _1mb*512);
 }
 
-static mem8_t __fastcall nullRead8(u32 mem) {
-	return 0;
-}
-static mem16_t __fastcall nullRead16(u32 mem) {
-	return 0;
-}
-static mem32_t __fastcall nullRead32(u32 mem) {
-	return 0;
-}
-static void __fastcall nullRead64(u32 mem, mem64_t *out) {
-	*out = 0;
-}
-static void __fastcall nullRead128(u32 mem, mem128_t *out) {
-	ZeroQWC(out);
-}
-static void __fastcall nullWrite8(u32 mem, mem8_t value)
-{
-}
-static void __fastcall nullWrite16(u32 mem, mem16_t value)
-{
-}
-static void __fastcall nullWrite32(u32 mem, mem32_t value)
-{
-}
-static void __fastcall nullWrite64(u32 mem, const mem64_t *value)
-{
-}
-static void __fastcall nullWrite128(u32 mem, const mem128_t *value)
+//what do do with these ?
+void memMapSupervisorMem()
 {
 }
 
+void memMapUserMem()
+{
+}
+
+static mem8_t nullRead8(u32 mem) {
+	MEM_LOG("Read uninstalled memory at address %08x", mem);
+	return 0;
+}
+static mem16_t nullRead16(u32 mem) {
+	MEM_LOG("Read uninstalled memory at address %08x", mem);
+	return 0;
+}
+static mem32_t nullRead32(u32 mem) {
+	MEM_LOG("Read uninstalled memory at address %08x", mem);
+	return 0;
+}
+static RETURNS_R64 nullRead64(u32 mem) {
+	MEM_LOG("Read uninstalled memory at address %08x", mem);
+	return r64_zero();
+}
+static RETURNS_R128 nullRead128(u32 mem) {
+	MEM_LOG("Read uninstalled memory at address %08x", mem);
+	return r128_zero();
+}
+static void nullWrite8(u32 mem, mem8_t value)
+{
+	MEM_LOG("Write uninstalled memory at address %08x", mem);
+}
+static void nullWrite16(u32 mem, mem16_t value)
+{
+	MEM_LOG("Write uninstalled memory at address %08x", mem);
+}
+static void nullWrite32(u32 mem, mem32_t value)
+{
+	MEM_LOG("Write uninstalled memory at address %08x", mem);
+}
+static void nullWrite64(u32 mem, const mem64_t *value)
+{
+	MEM_LOG("Write uninstalled memory at address %08x", mem);
+}
+static void nullWrite128(u32 mem, const mem128_t *value)
+{
+	MEM_LOG("Write uninstalled memory at address %08x", mem);
+}
+
 template<int p>
-static mem8_t __fastcall _ext_memRead8 (u32 mem)
+static mem8_t _ext_memRead8 (u32 mem)
 {
 	switch (p)
 	{
@@ -198,93 +263,104 @@ static mem8_t __fastcall _ext_memRead8 (u32 mem)
 		case 6: // gsm
 			return gsRead8(mem);
 		case 7: // dev9
-			return DEV9read8(mem & ~0xa4000000);
+		{
+			mem8_t retval = DEV9read8(mem & ~0xa4000000);
+			Console.WriteLn("DEV9 read8 %8.8lx: %2.2lx", mem & ~0xa4000000, retval);
+			return retval;
+		}
 		default: break;
 	}
 
+	MEM_LOG("Unknown Memory Read8   from address %8.8x", mem);
 	cpuTlbMissR(mem, cpuRegs.branch);
 	return 0;
 }
 
 template<int p>
-static mem16_t __fastcall _ext_memRead16(u32 mem)
+static mem16_t _ext_memRead16(u32 mem)
 {
 	switch (p)
 	{
-		case 5: // ba0
-			if (mem == 0x1a000006)
-			{
-				static int ba6;
-				ba6++;
-				if (ba6 == 3)
-					ba6 = 0;
-				return ba6;
-			}
-			/* fall-through */
 		case 4: // b80
+			MEM_LOG("b800000 Memory read16 address %x", mem);
 			return 0;
+		case 5: // ba0
+			return ba0R16(mem);
 		case 6: // gsm
 			return gsRead16(mem);
 
 		case 7: // dev9
-			return DEV9read16(mem & ~0xa4000000);
+		{
+			mem16_t retval = DEV9read16(mem & ~0xa4000000);
+			Console.WriteLn("DEV9 read16 %8.8lx: %4.4lx", mem & ~0xa4000000, retval);
+			return retval;
+		}
 
 		case 8: // spu2
 			return SPU2read(mem);
 
 		default: break;
 	}
+	MEM_LOG("Unknown Memory read16  from address %8.8x", mem);
 	cpuTlbMissR(mem, cpuRegs.branch);
 	return 0;
 }
 
 template<int p>
-static mem32_t __fastcall _ext_memRead32(u32 mem)
+static mem32_t _ext_memRead32(u32 mem)
 {
 	switch (p)
 	{
 		case 6: // gsm
 			return gsRead32(mem);
 		case 7: // dev9
-			return DEV9read32(mem & ~0xa4000000);
+		{
+			mem32_t retval = DEV9read32(mem & ~0xa4000000);
+			Console.WriteLn("DEV9 read32 %8.8lx: %8.8lx", mem & ~0xa4000000, retval);
+			return retval;
+		}
 		default: break;
 	}
 
+	MEM_LOG("Unknown Memory read32  from address %8.8x (Status=%8.8x)", mem, cpuRegs.CP0.n.Status.val);
 	cpuTlbMissR(mem, cpuRegs.branch);
 	return 0;
 }
 
 template<int p>
-static void __fastcall _ext_memRead64(u32 mem, mem64_t *out)
+static RETURNS_R64 _ext_memRead64(u32 mem)
 {
 	switch (p)
 	{
 		case 6: // gsm
-			*out = gsRead64(mem); return;
+			return r64_from_u64(gsRead64(mem));
 		default: break;
 	}
 
+	MEM_LOG("Unknown Memory read64  from address %8.8x", mem);
 	cpuTlbMissR(mem, cpuRegs.branch);
+	return r64_zero();
 }
 
 template<int p>
-static void __fastcall _ext_memRead128(u32 mem, mem128_t *out)
+static RETURNS_R128 _ext_memRead128(u32 mem)
 {
 	switch (p)
 	{
 		//case 1: // hwm
-		//	hwRead128(mem & ~0xa0000000, out); return;
+		//	return hwRead128(mem & ~0xa0000000);
 		case 6: // gsm
-			CopyQWC(out,PS2GS_BASE(mem));
-		return;
+			return r128_load(PS2GS_BASE(mem));
 		default: break;
 	}
 
+	MEM_LOG("Unknown Memory read128 from address %8.8x", mem);
 	cpuTlbMissR(mem, cpuRegs.branch);
+	return r128_zero();
 }
 
 template<int p>
-static void __fastcall _ext_memWrite8 (u32 mem, mem8_t  value)
+static void _ext_memWrite8 (u32 mem, mem8_t  value)
 {
 	switch (p) {
 		case 3: // psh4
@@ -293,61 +369,89 @@ static void __fastcall _ext_memWrite8 (u32 mem, mem8_t  value)
 			gsWrite8(mem, value); return;
 		case 7: // dev9
 			DEV9write8(mem & ~0xa4000000, value);
+			Console.WriteLn("DEV9 write8 %8.8lx: %2.2lx", mem & ~0xa4000000, value);
 			return;
 		default: break;
 	}
 
+	MEM_LOG("Unknown Memory write8   to  address %x with data %2.2x", mem, value);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
 template<int p>
-static void __fastcall _ext_memWrite16(u32 mem, mem16_t value)
+static void _ext_memWrite16(u32 mem, mem16_t value)
 {
 	switch (p) {
 		case 5: // ba0
+			MEM_LOG("ba00000 Memory write16 to  address %x with data %x", mem, value);
 			return;
 		case 6: // gsm
 			gsWrite16(mem, value); return;
 		case 7: // dev9
 			DEV9write16(mem & ~0xa4000000, value);
+			Console.WriteLn("DEV9 write16 %8.8lx: %4.4lx", mem & ~0xa4000000, value);
 			return;
 		case 8: // spu2
 			SPU2write(mem, value); return;
 		default: break;
 	}
+	MEM_LOG("Unknown Memory write16  to  address %x with data %4.4x", mem, value);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
 template<int p>
-static void __fastcall _ext_memWrite32(u32 mem, mem32_t value)
+static void _ext_memWrite32(u32 mem, mem32_t value)
 {
 	switch (p) {
 		case 6: // gsm
 			gsWrite32(mem, value); return;
 		case 7: // dev9
 			DEV9write32(mem & ~0xa4000000, value);
+			Console.WriteLn("DEV9 write32 %8.8lx: %8.8lx", mem & ~0xa4000000, value);
 			return;
 		default: break;
 	}
+	MEM_LOG("Unknown Memory write32  to  address %x with data %8.8x", mem, value);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
 template<int p>
-static void __fastcall _ext_memWrite64(u32 mem, const mem64_t* value)
+static void _ext_memWrite64(u32 mem, const mem64_t* value)
 {
+
+	/*switch (p) {
+		//case 1: // hwm
+		//	hwWrite64(mem & ~0xa0000000, *value);
+		//	return;
+		//case 6: // gsm
+		//	gsWrite64(mem & ~0xa0000000, *value); return;
+	}*/
+
+	MEM_LOG("Unknown Memory write64  to  address %x with data %8.8x_%8.8x", mem, (u32)(*value>>32), (u32)*value);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
 template<int p>
-static void __fastcall _ext_memWrite128(u32 mem, const mem128_t *value)
+static void _ext_memWrite128(u32 mem, const mem128_t *value)
 {
+	/*switch (p) {
+		//case 1: // hwm
+		//	hwWrite128(mem & ~0xa0000000, value);
+		//	return;
+		//case 6: // gsm
+		//	mem &= ~0xa0000000;
+		//	gsWrite64(mem,   value[0]);
+		//	gsWrite64(mem+8, value[1]); return;
+	}*/
+
+	MEM_LOG("Unknown Memory write128 to  address %x with data %8.8x_%8.8x_%8.8x_%8.8x", mem, ((u32*)value)[3], ((u32*)value)[2], ((u32*)value)[1], ((u32*)value)[0]);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
 #define vtlb_RegisterHandlerTempl1(nam,t) vtlb_RegisterHandler(nam##Read8<t>,nam##Read16<t>,nam##Read32<t>,nam##Read64<t>,nam##Read128<t>, \
 															   nam##Write8<t>,nam##Write16<t>,nam##Write32<t>,nam##Write64<t>,nam##Write128<t>)
 
-typedef void __fastcall ClearFunc_t( u32 addr, u32 qwc );
+typedef void ClearFunc_t( u32 addr, u32 qwc );
 
 template<int vunum> static __fi void ClearVuFunc(u32 addr, u32 size) {
 	if (vunum) CpuVU1->Clear(addr, size);
@@ -355,45 +459,45 @@ template<int vunum> static __fi void ClearVuFunc(u32 addr, u32 size) {
 }
 
 // VU Micro Memory Reads...
-template<int vunum> static mem8_t __fc vuMicroRead8(u32 addr) {
+template<int vunum> static mem8_t vuMicroRead8(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return vu->Micro[addr];
 }
-template<int vunum> static mem16_t __fc vuMicroRead16(u32 addr) {
+template<int vunum> static mem16_t vuMicroRead16(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u16*)&vu->Micro[addr];
 }
-template<int vunum> static mem32_t __fc vuMicroRead32(u32 addr) {
+template<int vunum> static mem32_t vuMicroRead32(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u32*)&vu->Micro[addr];
 }
-template<int vunum> static void __fc vuMicroRead64(u32 addr,mem64_t* data) {
+template<int vunum> static RETURNS_R64 vuMicroRead64(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
-	*data=*(u64*)&vu->Micro[addr];
+	return r64_load(&vu->Micro[addr]);
 }
-template<int vunum> static void __fc vuMicroRead128(u32 addr,mem128_t* data) {
+template<int vunum> static RETURNS_R128 vuMicroRead128(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	
-	CopyQWC(data,&vu->Micro[addr]);
+	return r128_load(&vu->Micro[addr]);
 }
 
 // Profiled VU writes: Happen very infrequently, with exception of BIOS initialization (at most twice per
 //   frame in-game, and usually none at all after BIOS), so cpu clears aren't much of a big deal.
-template<int vunum> static void __fc vuMicroWrite8(u32 addr,mem8_t data) {
+template<int vunum> static void vuMicroWrite8(u32 addr,mem8_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
@@ -406,7 +510,7 @@ template<int vunum> static void __fc vuMicroWrite8(u32 addr,mem8_t data) {
 		vu->Micro[addr] =data;
 	}
 }
-template<int vunum> static void __fc vuMicroWrite16(u32 addr, mem16_t data) {
+template<int vunum> static void vuMicroWrite16(u32 addr, mem16_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
@@ -419,7 +523,7 @@ template<int vunum> static void __fc vuMicroWrite16(u32 addr, mem16_t data) {
 		*(u16*)&vu->Micro[addr] =data;
 	}
 }
-template<int vunum> static void __fc vuMicroWrite32(u32 addr, mem32_t data) {
+template<int vunum> static void vuMicroWrite32(u32 addr, mem32_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	
@@ -432,7 +536,7 @@ template<int vunum> static void __fc vuMicroWrite32(u32 addr, mem32_t data) {
 		*(u32*)&vu->Micro[addr] =data;
 	}
 }
-template<int vunum> static void __fc vuMicroWrite64(u32 addr, const mem64_t* data) {
+template<int vunum> static void vuMicroWrite64(u32 addr, const mem64_t* data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 
@@ -446,7 +550,7 @@ template<int vunum> static void __fc vuMicroWrite64(u32 addr, const mem64_t* dat
 		*(u64*)&vu->Micro[addr] =data[0];
 	}
 }
-template<int vunum> static void __fc vuMicroWrite128(u32 addr, const mem128_t* data) {
+template<int vunum> static void vuMicroWrite128(u32 addr, const mem128_t* data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 
@@ -461,39 +565,39 @@ template<int vunum> static void __fc vuMicroWrite128(u32 addr, const mem128_t* d
 }
 
 // VU Data Memory Reads...
-template<int vunum> static mem8_t __fc vuDataRead8(u32 addr) {
+template<int vunum> static mem8_t vuDataRead8(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return vu->Mem[addr];
 }
-template<int vunum> static mem16_t __fc vuDataRead16(u32 addr) {
+template<int vunum> static mem16_t vuDataRead16(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u16*)&vu->Mem[addr];
 }
-template<int vunum> static mem32_t __fc vuDataRead32(u32 addr) {
+template<int vunum> static mem32_t vuDataRead32(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u32*)&vu->Mem[addr];
 }
-template<int vunum> static void __fc vuDataRead64(u32 addr, mem64_t* data) {
+template<int vunum> static RETURNS_R64 vuDataRead64(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
-	*data=*(u64*)&vu->Mem[addr];
+	return r64_load(&vu->Mem[addr]);
 }
-template<int vunum> static void __fc vuDataRead128(u32 addr, mem128_t* data) {
+template<int vunum> static RETURNS_R128 vuDataRead128(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
-	CopyQWC(data,&vu->Mem[addr]);
+	return r128_load(&vu->Mem[addr]);
 }
 
 // VU Data Memory Writes...
-template<int vunum> static void __fc vuDataWrite8(u32 addr, mem8_t data) {
+template<int vunum> static void vuDataWrite8(u32 addr, mem8_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
@@ -502,7 +606,7 @@ template<int vunum> static void __fc vuDataWrite8(u32 addr, mem8_t data) {
 	}
 	vu->Mem[addr] = data;
 }
-template<int vunum> static void __fc vuDataWrite16(u32 addr, mem16_t data) {
+template<int vunum> static void vuDataWrite16(u32 addr, mem16_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
@@ -511,7 +615,7 @@ template<int vunum> static void __fc vuDataWrite16(u32 addr, mem16_t data) {
 	}
 	*(u16*)&vu->Mem[addr] = data;
 }
-template<int vunum> static void __fc vuDataWrite32(u32 addr, mem32_t data) {
+template<int vunum> static void vuDataWrite32(u32 addr, mem32_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
@@ -520,7 +624,7 @@ template<int vunum> static void __fc vuDataWrite32(u32 addr, mem32_t data) {
 	}
 	*(u32*)&vu->Mem[addr] = data;
 }
-template<int vunum> static void __fc vuDataWrite64(u32 addr, const mem64_t* data) {
+template<int vunum> static void vuDataWrite64(u32 addr, const mem64_t* data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
@@ -529,7 +633,7 @@ template<int vunum> static void __fc vuDataWrite64(u32 addr, const mem64_t* data
 	}
 	*(u64*)&vu->Mem[addr] = data[0];
 }
-template<int vunum> static void __fc vuDataWrite128(u32 addr, const mem128_t* data) {
+template<int vunum> static void vuDataWrite128(u32 addr, const mem128_t* data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
@@ -542,13 +646,22 @@ template<int vunum> static void __fc vuDataWrite128(u32 addr, const mem128_t* da
 
 void memSetPageAddr(u32 vaddr, u32 paddr)
 {
+	//Console.WriteLn("memSetPageAddr: %8.8x -> %8.8x", vaddr, paddr);
+
 	vtlb_VMap(vaddr,paddr,0x1000);
 
 }
 
 void memClearPageAddr(u32 vaddr)
 {
+	//Console.WriteLn("memClearPageAddr: %8.8x", vaddr);
+
 	vtlb_VMapUnmap(vaddr,0x1000); // -> whut ?
+
+#ifdef FULLTLB
+//	memLUTRK[vaddr >> 12] = 0;
+//	memLUTWK[vaddr >> 12] = 0;
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -563,7 +676,7 @@ public:
 static mmap_PageFaultHandler* mmap_faultHandler = NULL;
 
 EEVM_MemoryAllocMess* eeMem = NULL;
-__pagealigned u8 eeHw[Ps2MemSize::Hardware];
+alignas(__pagesize) u8 eeHw[Ps2MemSize::Hardware];
 
 
 void memBindConditionalHandlers()
@@ -574,6 +687,7 @@ void memBindConditionalHandlers()
 	{
 		vtlbMemR16FP* page0F16(hwRead16_page_0F_INTC_HACK);
 		vtlbMemR32FP* page0F32(hwRead32_page_0F_INTC_HACK);
+		//vtlbMemR64FP* page0F64(hwRead64_generic_INTC_HACK);
 
 		vtlb_ReassignHandler( hw_by_page[0xf],
 			hwRead8<0x0f>,	page0F16,			page0F32,			hwRead64<0x0f>,		hwRead128<0x0f>,
@@ -584,6 +698,7 @@ void memBindConditionalHandlers()
 	{
 		vtlbMemR16FP* page0F16(hwRead16<0x0f>);
 		vtlbMemR32FP* page0F32(hwRead32<0x0f>);
+		//vtlbMemR64FP* page0F64(hwRead64<0x0f>);
 
 		vtlb_ReassignHandler( hw_by_page[0xf],
 			hwRead8<0x0f>,	page0F16,			page0F32,			hwRead64<0x0f>,		hwRead128<0x0f>,
@@ -597,13 +712,14 @@ void memBindConditionalHandlers()
 //  eeMemoryReserve  (implementations)
 // --------------------------------------------------------------------------------------
 eeMemoryReserve::eeMemoryReserve()
-	: _parent( sizeof(*eeMem) )
+	: _parent( "EE Main Memory", sizeof(*eeMem) )
 {
 }
 
 void eeMemoryReserve::Reserve(VirtualMemoryManagerPtr allocator)
 {
 	_parent::Reserve(std::move(allocator), HostMemoryMap::EEmemOffset);
+	//_parent::Reserve(EmuConfig.HostMap.IOP);
 }
 
 void eeMemoryReserve::Commit()
@@ -615,8 +731,10 @@ void eeMemoryReserve::Commit()
 // Resets memory mappings, unmaps TLBs, reloads bios roms, etc.
 void eeMemoryReserve::Reset()
 {
-	if(!mmap_faultHandler)
+	if(!mmap_faultHandler) {
+		pxAssert(Source_PageFault);
 		mmap_faultHandler = new mmap_PageFaultHandler();
+	}
 	
 	_parent::Reset();
 
@@ -624,6 +742,13 @@ void eeMemoryReserve::Reset()
 	// resets of the system hardware would only clear vtlb mappings, but since the
 	// rest of the emu is not really set up to support a "soft" reset of that sort
 	// we opt for the hard/safe version.
+
+	pxAssume( eeMem );
+
+#ifdef ENABLECACHE
+	memset(pCache,0,sizeof(_cacheS)*64);
+#endif
+
 	vtlb_Init();
 
 	null_handler = vtlb_RegisterHandler(nullRead8, nullRead16, nullRead32, nullRead64, nullRead128,
@@ -699,28 +824,44 @@ void eeMemoryReserve::Reset()
 	// GS Optimized Mappings
 
 	tlb_fallback_6 = vtlb_RegisterHandler(
-		gsRead8, gsRead16, gsRead32, _ext_memRead64<6>, _ext_memRead128<6>,
-		gsWrite8, gsWrite16, gsWrite32, gsWrite64_generic, gsWrite128_generic
+		_ext_memRead8<6>, _ext_memRead16<6>, _ext_memRead32<6>, _ext_memRead64<6>, _ext_memRead128<6>,
+		_ext_memWrite8<6>, _ext_memWrite16<6>, _ext_memWrite32<6>, gsWrite64_generic, gsWrite128_generic
 	);
 
 	gs_page_0 = vtlb_RegisterHandler(
-		gsRead8, gsRead16, gsRead32, _ext_memRead64<6>, _ext_memRead128<6>,
-		gsWrite8, gsWrite16, gsWrite32, gsWrite64_generic, gsWrite128_generic
+		_ext_memRead8<6>, _ext_memRead16<6>, _ext_memRead32<6>, _ext_memRead64<6>, _ext_memRead128<6>,
+		_ext_memWrite8<6>, _ext_memWrite16<6>, _ext_memWrite32<6>, gsWrite64_page_00, gsWrite128_page_00
 	);
 
 	gs_page_1 = vtlb_RegisterHandler(
-		gsRead8, gsRead16, gsRead32, _ext_memRead64<6>, _ext_memRead128<6>,
-		gsWrite8, gsWrite16, gsWrite32, gsWrite64_page_01, gsWrite128_page_01
+		_ext_memRead8<6>, _ext_memRead16<6>, _ext_memRead32<6>, _ext_memRead64<6>, _ext_memRead128<6>,
+		_ext_memWrite8<6>, _ext_memWrite16<6>, _ext_memWrite32<6>, gsWrite64_page_01, gsWrite128_page_01
 	);
+
+	//vtlb_Reset();
+
+	// reset memLUT (?)
+	//vtlb_VMap(0x00000000,0x00000000,0x20000000);
+	//vtlb_VMapUnmap(0x20000000,0x60000000);
 
 	memMapPhy();
 	memMapVUmicro();
 	memMapKernelMem();
+	memMapSupervisorMem();
+	memMapUserMem();
+	memSetKernelMode();
 
 	vtlb_VMap(0x00000000,0x00000000,0x20000000);
 	vtlb_VMapUnmap(0x20000000,0x60000000);
 
-	LoadBIOS();
+#ifdef PCSX2_CORE
+	const bool needs_bios = !GSDumpReplayer::IsReplayingDump();
+#else
+	constexpr bool needs_bios = true;
+#endif
+
+	if (needs_bios && !LoadBIOS())
+		pxFailRel("Failed to load BIOS");
 }
 
 void eeMemoryReserve::Decommit()
@@ -774,7 +915,7 @@ struct vtlb_PageProtectionInfo
 	vtlb_ProtectionMode Mode;
 };
 
-static __aligned16 vtlb_PageProtectionInfo m_PageProtectInfo[Ps2MemSize::MainRam >> 12];
+alignas(16) static vtlb_PageProtectionInfo m_PageProtectInfo[Ps2MemSize::MainRam >> 12];
 
 
 // returns:
@@ -783,9 +924,11 @@ static __aligned16 vtlb_PageProtectionInfo m_PageProtectInfo[Ps2MemSize::MainRam
 //
 vtlb_ProtectionMode mmap_GetRamPageInfo( u32 paddr )
 {
+	pxAssert( eeMem );
+
 	paddr &= ~0xfff;
 
-	uptr ptr     = (uptr)PSM( paddr );
+	uptr ptr = (uptr)PSM( paddr );
 	uptr rampage = ptr - (uptr)eeMem->Main;
 
 	if (rampage >= Ps2MemSize::MainRam)
@@ -799,9 +942,11 @@ vtlb_ProtectionMode mmap_GetRamPageInfo( u32 paddr )
 // paddr - physically mapped PS2 address
 void mmap_MarkCountedRamPage( u32 paddr )
 {
+	pxAssert( eeMem );
+	
 	paddr &= ~0xfff;
 
-	uptr ptr    = (uptr)PSM( paddr );
+	uptr ptr = (uptr)PSM( paddr );
 	int rampage = (ptr - (uptr)eeMem->Main) >> 12;
 
 	// Important: Update the ReverseRamMap here because TLB changes could alter the paddr
@@ -812,6 +957,11 @@ void mmap_MarkCountedRamPage( u32 paddr )
 	if( m_PageProtectInfo[rampage].Mode == ProtMode_Write )
 		return;		// skip town if we're already protected.
 
+	eeRecPerfLog.Write( (m_PageProtectInfo[rampage].Mode == ProtMode_Manual) ?
+		"Re-protecting page @ 0x%05x" : "Protected page @ 0x%05x",
+		paddr>>12
+	);
+
 	m_PageProtectInfo[rampage].Mode = ProtMode_Write;
 	HostSys::MemProtect( &eeMem->Main[rampage<<12], __pagesize, PageAccess_ReadOnly() );
 }
@@ -821,7 +971,15 @@ void mmap_MarkCountedRamPage( u32 paddr )
 // from code residing in this page will use manual protection.
 static __fi void mmap_ClearCpuBlock( uint offset )
 {
+	pxAssert( eeMem );
+
 	int rampage = offset >> 12;
+
+	// Assertion: This function should never be run on a block that's already under
+	// manual protection.  Indicates a logic error in the recompiler or protection code.
+	pxAssertMsg( m_PageProtectInfo[rampage].Mode != ProtMode_Manual,
+		"Attempted to clear a block that is already under manual protection." );
+
 	HostSys::MemProtect( &eeMem->Main[rampage<<12], __pagesize, PageAccess_ReadWrite() );
 	m_PageProtectInfo[rampage].Mode = ProtMode_Manual;
 	Cpu->Clear( m_PageProtectInfo[rampage].ReverseRamMap, 0x400 );
@@ -829,6 +987,8 @@ static __fi void mmap_ClearCpuBlock( uint offset )
 
 void mmap_PageFaultHandler::OnPageFaultEvent( const PageFaultInfo& info, bool& handled )
 {
+	pxAssert( eeMem );
+
 	// get bad virtual address
 	uptr offset = info.addr - (uptr)eeMem->Main;
 	if( offset >= Ps2MemSize::MainRam ) return;
@@ -841,8 +1001,9 @@ void mmap_PageFaultHandler::OnPageFaultEvent( const PageFaultInfo& info, bool& h
 // This does not clear any recompiler blocks.  It is assumed (and necessary) for the caller
 // to ensure the EErec is also reset in conjunction with calling this function.
 //  (this function is called by default from the eerecReset).
-void mmap_ResetBlockTracking(void)
+void mmap_ResetBlockTracking()
 {
+	//DbgCon.WriteLn( "vtlb/mmap: Block Tracking reset..." );
 	memzero( m_PageProtectInfo );
 	if (eeMem) HostSys::MemProtect( eeMem->Main, Ps2MemSize::MainRam, PageAccess_ReadWrite() );
 }

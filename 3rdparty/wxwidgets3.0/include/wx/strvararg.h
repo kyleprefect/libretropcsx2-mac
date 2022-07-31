@@ -11,6 +11,9 @@
 #define _WX_STRVARARG_H_
 
 #include "wx/platform.h"
+#if wxONLY_WATCOM_EARLIER_THAN(1,4)
+    #error "OpenWatcom version >= 1.4 is required to compile this code"
+#endif
 
 #include "wx/cpp.h"
 #include "wx/chartype.h"
@@ -249,6 +252,8 @@ struct wxFormatStringArgument
     // overriding this operator allows us to reuse _WX_VARARG_JOIN macro
     wxFormatStringArgument operator,(const wxFormatStringArgument& a) const
     {
+        wxASSERT_MSG( m_str == NULL || a.m_str == NULL,
+                      "can't have two format strings in vararg function" );
         return wxFormatStringArgument(m_str ? m_str : a.m_str);
     }
 
@@ -302,6 +307,28 @@ struct wxFormatStringArgumentFinder<wxWCharBuffer>
 // ----------------------------------------------------------------------------
 // wxArgNormalizer*<T> converters
 // ----------------------------------------------------------------------------
+
+#if wxDEBUG_LEVEL
+    // Check that the format specifier for index-th argument in 'fmt' has
+    // the correct type (one of wxFormatString::Arg_XXX or-combination in
+    // 'expected_mask').
+    #define wxASSERT_ARG_TYPE(fmt, index, expected_mask)                    \
+        wxSTATEMENT_MACRO_BEGIN                                             \
+            if ( !fmt )                                                     \
+                break;                                                      \
+            const int argtype = fmt->GetArgumentType(index);                \
+            wxASSERT_MSG( (argtype & (expected_mask)) == argtype,           \
+                          "format specifier doesn't match argument type" ); \
+        wxSTATEMENT_MACRO_END
+#else
+    // Just define it to suppress "unused parameter" warnings for the
+    // parameters which we don't use otherwise
+    #define wxASSERT_ARG_TYPE(fmt, index, expected_mask)                      \
+        wxUnusedVar(fmt);                                                     \
+        wxUnusedVar(index)
+#endif // wxDEBUG_LEVEL/!wxDEBUG_LEVEL
+
+
 #if defined(HAVE_TYPE_TRAITS) || defined(HAVE_TR1_TYPE_TRAITS)
 
 // Note: this type is misnamed, so that the error message is easier to
@@ -426,6 +453,7 @@ struct wxArgNormalizer
                     const wxFormatString *fmt, unsigned index)
         : m_value(value)
     {
+        wxASSERT_ARG_TYPE( fmt, index, wxFormatStringSpecifier<T>::value );
     }
 
     // Returns the value in a form that can be safely passed to real vararg
@@ -484,6 +512,7 @@ struct wxArgNormalizerWithBuffer
                               unsigned index)
         : m_value(buf)
     {
+        wxASSERT_ARG_TYPE( fmt, index, wxFormatString::Arg_String );
     }
 
     const CharType *get() const { return m_value; }
@@ -500,6 +529,7 @@ struct WXDLLIMPEXP_BASE wxArgNormalizerNative<const wxString&>
                           unsigned index)
         : m_value(s)
     {
+        wxASSERT_ARG_TYPE( fmt, index, wxFormatString::Arg_String );
     }
 
     const wxStringCharType *get() const;
@@ -516,6 +546,7 @@ struct WXDLLIMPEXP_BASE wxArgNormalizerNative<const wxCStrData&>
                           unsigned index)
         : m_value(value)
     {
+        wxASSERT_ARG_TYPE( fmt, index, wxFormatString::Arg_String );
     }
 
     const wxStringCharType *get() const;
@@ -575,8 +606,12 @@ struct wxArgNormalizerUtf8<const char*>
                         const wxFormatString *fmt,
                         unsigned index)
     {
+        wxASSERT_ARG_TYPE( fmt, index, wxFormatString::Arg_String );
+
         if ( wxLocaleIsUtf8 )
+        {
             m_value = wxScopedCharBuffer::CreateNonOwned(s);
+        }
         else
         {
             // convert to widechar string first:
@@ -735,6 +770,9 @@ struct wxArgNormalizerNarrowChar
     wxArgNormalizerNarrowChar(T value,
                               const wxFormatString *fmt, unsigned index)
     {
+        wxASSERT_ARG_TYPE( fmt, index,
+                           wxFormatString::Arg_Char | wxFormatString::Arg_Int );
+
         // FIXME-UTF8: which one is better default in absence of fmt string
         //             (i.e. when used like e.g. Foo("foo", "bar", 'c', NULL)?
         if ( !fmt || fmt->GetArgumentType(index) == wxFormatString::Arg_Char )
@@ -789,6 +827,8 @@ WX_ARG_NORMALIZER_FORWARD(const signed char&, signed char);
 
 #undef WX_ARG_NORMALIZER_FORWARD
 #undef _WX_ARG_NORMALIZER_FORWARD_IMPL
+
+// NB: Don't #undef wxASSERT_ARG_TYPE here as it's also used in wx/longlong.h.
 
 // ----------------------------------------------------------------------------
 // WX_VA_ARG_STRING
@@ -1120,5 +1160,68 @@ private:
 #define _WX_VARARG_DEFINE_FUNC_NOP_N0(name, numfixed, fixed)                  \
     inline void name(_WX_VARARG_FIXED_UNUSED_EXPAND(numfixed, fixed))         \
     {}
+
+
+// ----------------------------------------------------------------------------
+// workaround for OpenWatcom bug #351
+// ----------------------------------------------------------------------------
+
+#ifdef __WATCOMC__
+// workaround for http://bugzilla.openwatcom.org/show_bug.cgi?id=351
+
+// This macro can be used to forward a 'vararg' template to another one with
+// different fixed arguments types. Parameters are same as for
+// WX_DEFINE_VARARG_FUNC (rettype=void can be used here), 'convfixed' is how
+// to convert fixed arguments. For example, this is typical code for dealing
+// with different forms of format string:
+//
+// WX_DEFINE_VARARG_FUNC_VOID(Printf, 1, (const wxFormatString&),
+//                            DoPrintfWchar, DoPrintfUtf8)
+// #ifdef __WATCOMC__
+// WX_VARARG_WATCOM_WORKAROUND(void, Printf, 1, (const wxString&),
+//                             (wxFormatString(f1)))
+// WX_VARARG_WATCOM_WORKAROUND(void, Printf, 1, (const char*),
+//                             (wxFormatString(f1)))
+// ...
+#define WX_VARARG_WATCOM_WORKAROUND(rettype, name, numfixed, fixed, convfixed)\
+    _WX_VARARG_ITER(_WX_VARARG_MAX_ARGS,                                      \
+                    _WX_VARARG_WATCOM_WORKAROUND,                             \
+                    rettype, name, convfixed, dummy, numfixed, fixed)
+
+#define WX_VARARG_WATCOM_WORKAROUND_CTOR(name, numfixed, fixed, convfixed)    \
+    _WX_VARARG_ITER(_WX_VARARG_MAX_ARGS,                                      \
+                    _WX_VARARG_WATCOM_WORKAROUND_CTOR,                        \
+                    dummy, name, convfixed, dummy, numfixed, fixed)
+
+#define _WX_VARARG_WATCOM_UNPACK_1(a1)               a1
+#define _WX_VARARG_WATCOM_UNPACK_2(a1, a2)           a1, a2
+#define _WX_VARARG_WATCOM_UNPACK_3(a1, a2, a3)       a1, a2, a3
+#define _WX_VARARG_WATCOM_UNPACK_4(a1, a2, a3, a4)   a1, a2, a3, a4
+#define _WX_VARARG_WATCOM_UNPACK(N, convfixed) \
+        _WX_VARARG_WATCOM_UNPACK_##N convfixed
+
+#define _WX_VARARG_PASS_WATCOM(i) a##i
+
+#define _WX_VARARG_WATCOM_WORKAROUND(N, rettype, name,                        \
+                                     convfixed, dummy, numfixed, fixed)       \
+    template<_WX_VARARG_JOIN(N, _WX_VARARG_TEMPL)>                            \
+    rettype name(_WX_VARARG_FIXED_EXPAND(numfixed, fixed),                    \
+                 _WX_VARARG_JOIN(N, _WX_VARARG_ARG))                          \
+    {                                                                         \
+         return name(_WX_VARARG_WATCOM_UNPACK(numfixed, convfixed),           \
+                     _WX_VARARG_JOIN(N, _WX_VARARG_PASS_WATCOM));             \
+    }
+
+#define _WX_VARARG_WATCOM_WORKAROUND_CTOR(N, dummy1, name,                    \
+                                     convfixed, dummy2, numfixed, fixed)      \
+    template<_WX_VARARG_JOIN(N, _WX_VARARG_TEMPL)>                            \
+    name(_WX_VARARG_FIXED_EXPAND(numfixed, fixed),                            \
+                 _WX_VARARG_JOIN(N, _WX_VARARG_ARG))                          \
+    {                                                                         \
+         name(_WX_VARARG_WATCOM_UNPACK(numfixed, convfixed),                  \
+                     _WX_VARARG_JOIN(N, _WX_VARARG_PASS_WATCOM));             \
+    }
+
+#endif // __WATCOMC__
 
 #endif // _WX_STRVARARG_H_

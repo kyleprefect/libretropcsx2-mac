@@ -13,6 +13,13 @@
 
 #include "wx/msw/wrapwin.h"
 
+#ifdef __WXWINCE__
+    #include <winreg.h>
+    #include <objbase.h>
+    #include <shlguid.h>
+    #include <shellapi.h>
+#endif
+
 #ifdef __VISUALC__
     // Disable a warning that we can do nothing about: we get it for
     // shlobj.h at least from 7.1a Windows kit when using VC14.
@@ -29,6 +36,8 @@
 #endif
 
 #include "wx/msw/winundef.h"
+
+#include "wx/log.h"
 
 // ----------------------------------------------------------------------------
 // wxItemIdList implements RAII on top of ITEMIDLIST
@@ -54,6 +63,10 @@ public:
                 pMalloc->Free(pidl);
                 pMalloc->Release();
             }
+            else
+            {
+                wxLogLastError(wxT("SHGetMalloc"));
+            }
         }
     }
 
@@ -69,7 +82,10 @@ public:
     wxString GetPath() const
     {
         wxString path;
-        if ( !SHGetPathFromIDList(m_pidl, wxStringBuffer(path, MAX_PATH)) ) { }
+        if ( !SHGetPathFromIDList(m_pidl, wxStringBuffer(path, MAX_PATH)) )
+        {
+            wxLogLastError(wxT("SHGetPathFromIDList"));
+        }
 
         return path;
     }

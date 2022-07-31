@@ -19,6 +19,10 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #ifndef WX_PRECOMP
     #include "wx/hash.h"
     #include "wx/object.h"
@@ -155,6 +159,8 @@ void wxHashTableBase::DoInsertNode( size_t bucket, wxHashTableBase_Node* node )
 
 void wxHashTableBase::DoPut( long key, long hash, void* data )
 {
+    wxASSERT( m_keyType == wxKEY_INTEGER );
+
     size_t bucket = size_t(hash) % m_size;
     Node* node = new wxHashTableBase_Node( key, data, this );
 
@@ -163,6 +169,8 @@ void wxHashTableBase::DoPut( long key, long hash, void* data )
 
 void wxHashTableBase::DoPut( const wxString& key, long hash, void* data )
 {
+    wxASSERT( m_keyType == wxKEY_STRING );
+
     size_t bucket = size_t(hash) % m_size;
     Node* node = new wxHashTableBase_Node( key, data, this );
 
@@ -171,6 +179,8 @@ void wxHashTableBase::DoPut( const wxString& key, long hash, void* data )
 
 void* wxHashTableBase::DoGet( long key, long hash ) const
 {
+    wxASSERT( m_keyType == wxKEY_INTEGER );
+
     size_t bucket = size_t(hash) % m_size;
 
     if( m_table[bucket] == NULL )
@@ -193,6 +203,8 @@ void* wxHashTableBase::DoGet( long key, long hash ) const
 
 void* wxHashTableBase::DoGet( const wxString& key, long hash ) const
 {
+    wxASSERT( m_keyType == wxKEY_STRING );
+
     size_t bucket = size_t(hash) % m_size;
 
     if( m_table[bucket] == NULL )
@@ -230,6 +242,8 @@ void wxHashTableBase::DoUnlinkNode( size_t bucket, wxHashTableBase_Node* node,
 
 void* wxHashTableBase::DoDelete( long key, long hash )
 {
+    wxASSERT( m_keyType == wxKEY_INTEGER );
+
     size_t bucket = size_t(hash) % m_size;
 
     if( m_table[bucket] == NULL )
@@ -262,6 +276,8 @@ void* wxHashTableBase::DoDelete( long key, long hash )
 
 void* wxHashTableBase::DoDelete( const wxString& key, long hash )
 {
+    wxASSERT( m_keyType == wxKEY_STRING );
+
     size_t bucket = size_t(hash) % m_size;
 
     if( m_table[bucket] == NULL )
@@ -324,6 +340,8 @@ const wxHashTable& wxHashTable::operator=( const wxHashTable& table )
 void wxHashTable::DoCopy( const wxHashTable& WXUNUSED(table) )
 {
     Create( m_keyType, m_size );
+
+    wxFAIL;
 }
 
 void wxHashTable::DoDeleteContents( wxHashTableBase_Node* node )

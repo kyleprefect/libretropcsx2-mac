@@ -19,6 +19,10 @@
 // For compilers that support precompilation, includes "wx.h".
 #include "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #include "wx/tokenzr.h"
 
 #ifndef WX_PRECOMP
@@ -42,6 +46,8 @@ find_first_of(const wxChar *delims, size_t len,
               const wxString::const_iterator& from,
               const wxString::const_iterator& end)
 {
+    wxASSERT_MSG( from <= end,  wxT("invalid index") );
+
     for ( wxString::const_iterator i = from; i != end; ++i )
     {
         if ( wxTmemchr(delims, *i, len) )
@@ -56,6 +62,8 @@ find_first_not_of(const wxChar *delims, size_t len,
                   const wxString::const_iterator& from,
                   const wxString::const_iterator& end)
 {
+    wxASSERT_MSG( from <= end,  wxT("invalid index") );
+
     for ( wxString::const_iterator i = from; i != end; ++i )
     {
         if ( !wxTmemchr(delims, *i, len) )
@@ -119,6 +127,8 @@ void wxStringTokenizer::SetString(const wxString& str,
 
 void wxStringTokenizer::Reinit(const wxString& str)
 {
+    wxASSERT_MSG( IsOk(), wxT("you should call SetString() first") );
+
     m_string = str;
     m_stringEnd = m_string.end();
     m_pos = m_string.begin();
@@ -151,6 +161,8 @@ bool wxStringTokenizer::HasMoreTokens() const
 
 bool wxStringTokenizer::DoHasMoreTokens() const
 {
+    wxCHECK_MSG( IsOk(), false, wxT("you should call SetString() first") );
+
     if ( find_first_not_of(m_delims, m_delimsLen, m_pos, m_stringEnd)
          != m_stringEnd )
     {
@@ -177,6 +189,7 @@ bool wxStringTokenizer::DoHasMoreTokens() const
 
         case wxTOKEN_INVALID:
         case wxTOKEN_DEFAULT:
+            wxFAIL_MSG( wxT("unexpected tokenizer mode") );
             // fall through
 
         case wxTOKEN_STRTOK:
@@ -185,6 +198,28 @@ bool wxStringTokenizer::DoHasMoreTokens() const
     }
 
     return false;
+}
+
+// count the number of (remaining) tokens in the string
+size_t wxStringTokenizer::CountTokens() const
+{
+    wxCHECK_MSG( IsOk(), 0, wxT("you should call SetString() first") );
+
+    // VZ: this function is IMHO not very useful, so it's probably not very
+    //     important if its implementation here is not as efficient as it
+    //     could be -- but OTOH like this we're sure to get the correct answer
+    //     in all modes
+    wxStringTokenizer tkz(wxString(m_pos, m_stringEnd), m_delims, m_mode);
+
+    size_t count = 0;
+    while ( tkz.HasMoreTokens() )
+    {
+        count++;
+
+        (void)tkz.GetNextToken();
+    }
+
+    return count;
 }
 
 // ----------------------------------------------------------------------------

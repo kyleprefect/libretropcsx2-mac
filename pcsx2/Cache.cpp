@@ -56,11 +56,45 @@ namespace
 			ALL_FLAGS = 0xFFF
 		};
 
+		int flags() const
+		{
+			return rawValue & ALL_FLAGS;
+		}
+
+		bool isValid() const  { return rawValue & VALID_FLAG; }
+		bool isDirty() const  { return rawValue & DIRTY_FLAG; }
+		bool lrf() const      { return rawValue & LRF_FLAG; }
+		bool isLocked() const { return rawValue & LOCK_FLAG; }
+
+		bool isDirtyAndValid() const
+		{
+			return (rawValue & (DIRTY_FLAG | VALID_FLAG)) == (DIRTY_FLAG | VALID_FLAG);
+		}
+
+		void setValid()  { rawValue |= VALID_FLAG; }
+		void setDirty()  { rawValue |= DIRTY_FLAG; }
+		void setLocked() { rawValue |= LOCK_FLAG; }
+		void clearValid()  { rawValue &= ~VALID_FLAG; }
+		void clearDirty()  { rawValue &= ~DIRTY_FLAG; }
+		void clearLocked() { rawValue &= ~LOCK_FLAG; }
+		void toggleLRF() { rawValue ^= LRF_FLAG; }
+
+		uptr addr() const { return rawValue & ~ALL_FLAGS; }
+
+		void setAddr(uptr addr)
+		{
+			rawValue &= ALL_FLAGS;
+			rawValue |= (addr & ~ALL_FLAGS);
+		}
+
 		bool matches(uptr other) const
 		{
-			uptr adr      = rawValue & ~ALL_FLAGS;
-			bool is_valid = rawValue & VALID_FLAG;
-			return is_valid && adr == (other & ~ALL_FLAGS);
+			return isValid() && addr() == (other & ~ALL_FLAGS);
+		}
+
+		void clear()
+		{
+			rawValue &= LRF_FLAG;
 		}
 	};
 
@@ -70,30 +104,36 @@ namespace
 		CacheData& data;
 		int set;
 
+		uptr addr()
+		{
+			return tag.addr() | (set << 6);
+		}
+
 		void writeBackIfNeeded()
 		{
-			bool is_dirty_and_valid = (tag.rawValue & (CacheTag::DIRTY_FLAG | CacheTag::VALID_FLAG)) == (CacheTag::DIRTY_FLAG | CacheTag::VALID_FLAG);
-			if (!is_dirty_and_valid)
+			if (!tag.isDirtyAndValid())
 				return;
 
-			uptr adr    = tag.rawValue & ~CacheTag::ALL_FLAGS;
-			uptr target = adr | (set << 6);
+			uptr target = addr();
+
+			CACHE_LOG("Write back at %zx", target);
 			*reinterpret_cast<CacheData*>(target) = data;
-			tag.rawValue &= ~CacheTag::DIRTY_FLAG;
+			tag.clearDirty();
 		}
 
 		void load(uptr ppf)
 		{
-			tag.rawValue &= CacheTag::ALL_FLAGS;
-			tag.rawValue |= (ppf & ~CacheTag::ALL_FLAGS);
+			pxAssertMsg(!tag.isDirtyAndValid(), "Loaded a value into cache without writing back the old one!");
+
+			tag.setAddr(ppf);
 			data = *reinterpret_cast<CacheData*>(ppf & ~0x3FULL);
-			tag.rawValue |= CacheTag::VALID_FLAG;
-			tag.rawValue &= ~CacheTag::DIRTY_FLAG;
+			tag.setValid();
+			tag.clearDirty();
 		}
 
 		void clear()
 		{
-			tag.rawValue &= CacheTag::LRF_FLAG;
+			tag.clear();
 			data = CacheData();
 		}
 	};
@@ -107,13 +147,23 @@ namespace
 	struct Cache
 	{
 		CacheSet sets[64];
+
+		int setIdxFor(u32 vaddr) const
+		{
+			return (vaddr >> 6) & 0x3F;
+		}
+
+		CacheLine lineAt(int idx, int way)
+		{
+			return { sets[idx].tags[way], sets[idx].data[way], idx };
+		}
 	};
 
 	static Cache cache;
 
 }
 
-void resetCache(void)
+void resetCache()
 {
 	memzero(cache);
 }
@@ -134,37 +184,54 @@ static bool findInCache(const CacheSet& set, uptr ppf, int* way)
 
 static int getFreeCache(u32 mem, int* way)
 {
-	const int setIdx = (mem >> 6) & 0x3F;
-	CacheSet& set    = cache.sets[setIdx];
-	VTLBVirtual vmv  = vtlbdata.vmap[mem >> VTLB_PAGE_BITS];
-	uptr ppf         = vmv.assumePtr(mem);
+	const int setIdx = cache.setIdxFor(mem);
+	CacheSet& set = cache.sets[setIdx];
+	VTLBVirtual vmv = vtlbdata.vmap[mem >> VTLB_PAGE_BITS];
+	pxAssertMsg(!vmv.isHandler(mem), "Cache currently only supports non-handler addresses!");
+	uptr ppf = vmv.assumePtr(mem);
 
-	if (!findInCache(set, ppf, way))
+	if((cpuRegs.CP0.n.Config & 0x10000) == 0)
+		CACHE_LOG("Cache off!");
+
+	if (findInCache(set, ppf, way))
 	{
-		bool lrf0      = set.tags[0].rawValue & CacheTag::LRF_FLAG;
-		bool lrf1      = set.tags[1].rawValue & CacheTag::LRF_FLAG;
-		int newWay     = lrf0 ^ lrf1;
-		*way           = newWay;
-		CacheLine line = { cache.sets[setIdx].tags[newWay], cache.sets[setIdx].data[newWay], setIdx };
+		if (set.tags[*way].isLocked())
+			CACHE_LOG("Index %x Way %x Locked!!", setIdx, *way);
+	}
+	else
+	{
+		int newWay = set.tags[0].lrf() ^ set.tags[1].lrf();
+		*way = newWay;
+		CacheLine line = cache.lineAt(setIdx, newWay);
 
 		line.writeBackIfNeeded();
 		line.load(ppf);
-		line.tag.rawValue ^= CacheTag::LRF_FLAG;
+		line.tag.toggleLRF();
 	}
 
 	return setIdx;
 }
 
-template <typename Int>
-static void writeCache(u32 mem, Int value)
+template <bool Write, int Bytes>
+void* prepareCacheAccess(u32 mem, int* way, int* idx)
 {
-	int way = 0;
-	const int idx  = getFreeCache(mem, &way);
-	CacheLine line = { cache.sets[idx].tags[way], cache.sets[idx].data[way], idx };
+	*way = 0;
+	*idx = getFreeCache(mem, way);
+	CacheLine line = cache.lineAt(*idx, *way);
+	if (Write)
+		line.tag.setDirty();
+	u32 aligned = mem & ~(Bytes - 1);
+	return &line.data.bytes[aligned & 0x3f];
+}
 
-	line.tag.rawValue |= CacheTag::DIRTY_FLAG;; // Set dirty bit for writes;
-	u32 aligned        = mem & ~(sizeof(value) - 1);
-	*reinterpret_cast<Int*>(&line.data.bytes[aligned & 0x3f]) = value;
+template <typename Int>
+void writeCache(u32 mem, Int value)
+{
+	int way, idx;
+	void* addr = prepareCacheAccess<true, sizeof(Int)>(mem, &way, &idx);
+
+	CACHE_LOG("writeCache%d %8.8x adding to %d, way %d, value %llx", 8 * sizeof(value), mem, idx, way, value);
+	*reinterpret_cast<Int*>(addr) = value;
 }
 
 void writeCache8(u32 mem, u8 value)
@@ -189,22 +256,22 @@ void writeCache64(u32 mem, const u64 value)
 
 void writeCache128(u32 mem, const mem128_t* value)
 {
-	int way        = 0;
-	const int idx  = getFreeCache(mem, &way);
-	CacheLine line = { cache.sets[idx].tags[way], cache.sets[idx].data[way], idx };
-	line.tag.rawValue |= CacheTag::DIRTY_FLAG;; // Set dirty bit for writes;
-	u32 aligned    = mem & ~0xF;
-	*reinterpret_cast<mem128_t*>(&line.data.bytes[aligned & 0x3f]) = *value;
+	int way, idx;
+	void* addr = prepareCacheAccess<true, sizeof(mem128_t)>(mem, &way, &idx);
+
+	CACHE_LOG("writeCache128 %8.8x adding to %d, way %x, lo %llx, hi %llx", mem, idx, way, value->lo, value->hi);
+	*reinterpret_cast<mem128_t*>(addr) = *value;
 }
 
 template <typename Int>
-static Int readCache(u32 mem)
+Int readCache(u32 mem)
 {
-	int way        = 0;
-	const int idx  = getFreeCache(mem, &way);
-	CacheLine line = { cache.sets[idx].tags[way], cache.sets[idx].data[way], idx };
-	u32 aligned    = mem & ~(sizeof(Int) - 1);
-	return *reinterpret_cast<Int*>(&line.data.bytes[aligned & 0x3f]);
+	int way, idx;
+	void* addr = prepareCacheAccess<false, sizeof(Int)>(mem, &way, &idx);
+
+	Int value = *reinterpret_cast<Int*>(addr);
+	CACHE_LOG("readCache%d %8.8x from %d, way %d, value %llx", 8 * sizeof(value), mem, idx, way, value);
+	return value;
 }
 
 
@@ -223,22 +290,43 @@ u32 readCache32(u32 mem)
 	return readCache<u32>(mem);
 }
 
-u64 readCache64(u32 mem)
+RETURNS_R64 readCache64(u32 mem)
 {
-	return readCache<u64>(mem);
+	int way, idx;
+	void* addr = prepareCacheAccess<false, sizeof(u64)>(mem, &way, &idx);
+	r64 value = r64_load(addr);
+	CACHE_LOG("readCache64 %8.8x from %d, way %d, value %llx", mem, idx, way, *(u64*)&value);
+	return value;
+}
+
+RETURNS_R128 readCache128(u32 mem)
+{
+	int way, idx;
+	void* addr = prepareCacheAccess<false, sizeof(mem128_t)>(mem, &way, &idx);
+	r128 value = r128_load(addr);
+	u64* vptr = reinterpret_cast<u64*>(&value);
+	CACHE_LOG("readCache128 %8.8x from %d, way %d, lo %llx, hi %llx", mem, idx, way, vptr[0], vptr[1]);
+	return value;
 }
 
 template <typename Op>
-static void doCacheHitOp(u32 addr, Op op)
+void doCacheHitOp(u32 addr, const char* name, Op op)
 {
-	int way;
-	const int index = (addr >> 6) & 0x3F;
-	CacheSet  & set = cache.sets[index];
+	const int index = cache.setIdxFor(addr);
+	CacheSet& set = cache.sets[index];
 	VTLBVirtual vmv = vtlbdata.vmap[addr >> VTLB_PAGE_BITS];
-	uptr        ppf = vmv.assumePtr(addr);
+	uptr ppf = vmv.assumePtr(addr);
+	int way;
 
-	if (findInCache(set, ppf, &way))
-		op({ cache.sets[index].tags[way], cache.sets[index].data[way], index });
+	if (!findInCache(set, ppf, &way))
+	{
+		CACHE_LOG("CACHE %s NO HIT addr %x, index %d, tag0 %zx tag1 %zx", name, addr, index, set.tags[0].rawValue, set.tags[1].rawValue);
+		return;
+	}
+
+	CACHE_LOG("CACHE %s addr %x, index %d, way %d, flags %x OP %x", name, addr, index, way, set.tags[way].flags(), cpuRegs.code);
+
+	op(cache.lineAt(index, way));
 }
 
 namespace R5900 {
@@ -247,21 +335,23 @@ namespace Interpreter
 namespace OpcodeImpl
 {
 
-void CACHE(void)
+extern int Dcache;
+void CACHE()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
+	// CACHE_LOG("cpuRegs.GPR.r[_Rs_].UL[0] = %x, IMM = %x RT = %x", cpuRegs.GPR.r[_Rs_].UL[0], _Imm_, _Rt_);
 
 	switch (_Rt_) 
 	{
 		case 0x1a: //DHIN (Data Cache Hit Invalidate)
-			doCacheHitOp(addr, [](CacheLine line)
+			doCacheHitOp(addr, "DHIN", [](CacheLine line)
 			{
 				line.clear();
 			});
 			break;
 
 		case 0x18: //DHWBIN (Data Cache Hit WriteBack with Invalidate)
-			doCacheHitOp(addr, [](CacheLine line)
+			doCacheHitOp(addr, "DHWBIN", [](CacheLine line)
 			{
 				line.writeBackIfNeeded();
 				line.clear();
@@ -269,7 +359,7 @@ void CACHE(void)
 			break;
 
 		case 0x1c: //DHWOIN (Data Cache Hit WriteBack Without Invalidate)
-			doCacheHitOp(addr, [](CacheLine line)
+			doCacheHitOp(addr, "DHWOIN", [](CacheLine line)
 			{
 				line.writeBackIfNeeded();
 			});
@@ -277,76 +367,98 @@ void CACHE(void)
 
 		case 0x16: //DXIN (Data Cache Index Invalidate)
 		{
-			const int index = (addr >> 6) & 0x3F;
-			const int way   = addr & 0x1;
-			CacheLine line  = { cache.sets[index].tags[way], cache.sets[index].data[way], index };
+			const int index = cache.setIdxFor(addr);
+			const int way = addr & 0x1;
+			CacheLine line = cache.lineAt(index, way);
+
+			CACHE_LOG("CACHE DXIN addr %x, index %d, way %d, flag %x", addr, index, way, line.tag.flags());
+
 			line.clear();
 			break;
 		}
 
 		case 0x11: //DXLDT (Data Cache Load Data into TagLo)
 		{
-			const int index     = (addr >> 6) & 0x3F;
-			const int way       = addr & 0x1;
-			CacheLine line      = { cache.sets[index].tags[way], cache.sets[index].data[way], index };
+			const int index = cache.setIdxFor(addr);
+			const int way = addr & 0x1;
+			CacheLine line = cache.lineAt(index, way);
+
 			cpuRegs.CP0.n.TagLo = *reinterpret_cast<u32*>(&line.data.bytes[addr & 0x3C]);
+
+			CACHE_LOG("CACHE DXLDT addr %x, index %d, way %d, DATA %x OP %x", addr, index, way, cpuRegs.CP0.n.TagLo, cpuRegs.code);
 			break;
 		}
 
 		case 0x10: //DXLTG (Data Cache Load Tag into TagLo)
 		{
 			const int index = (addr >> 6) & 0x3F;
-			const int way   = addr & 0x1;
-			CacheLine line  = { cache.sets[index].tags[way], cache.sets[index].data[way], index };
+			const int way = addr & 0x1;
+			CacheLine line = cache.lineAt(index, way);
 
 			// DXLTG demands that SYNC.L is called before this command, which forces the cache to write back, so presumably games are checking the cache has updated the memory
 			// For speed, we will do it here.
 			line.writeBackIfNeeded();
 
 			// Our tags don't contain PS2 paddrs (instead they contain x86 addrs)
-			cpuRegs.CP0.n.TagLo = line.tag.rawValue & CacheTag::ALL_FLAGS;
+			cpuRegs.CP0.n.TagLo = line.tag.flags();
+
+			CACHE_LOG("CACHE DXLTG addr %x, index %d, way %d, DATA %x OP %x ", addr, index, way, cpuRegs.CP0.n.TagLo, cpuRegs.code);
+			CACHE_LOG("WARNING: DXLTG emulation supports flags only, things could break");
 			break;
 		}
 
 		case 0x13: //DXSDT (Data Cache Store 32bits from TagLo)
 		{
 			const int index = (addr >> 6) & 0x3F;
-			const int way   = addr & 0x1;
-			CacheLine line  = { cache.sets[index].tags[way], cache.sets[index].data[way], index };
+			const int way = addr & 0x1;
+			CacheLine line = cache.lineAt(index, way);
 
 			*reinterpret_cast<u32*>(&line.data.bytes[addr & 0x3C]) = cpuRegs.CP0.n.TagLo;
 
+			CACHE_LOG("CACHE DXSDT addr %x, index %d, way %d, DATA %x OP %x", addr, index, way, cpuRegs.CP0.n.TagLo, cpuRegs.code);
 			break;
 		}
 
 		case 0x12: //DXSTG (Data Cache Store Tag from TagLo)
 		{
-			const int index    = (addr >> 6) & 0x3F;
-			const int way      = addr & 0x1;
-			CacheLine line     = { cache.sets[index].tags[way], cache.sets[index].data[way], index };
+			const int index = (addr >> 6) & 0x3F;
+			const int way = addr & 0x1;
+			CacheLine line = cache.lineAt(index, way);
 
 			line.tag.rawValue &= ~CacheTag::ALL_FLAGS;
 			line.tag.rawValue |= (cpuRegs.CP0.n.TagLo & CacheTag::ALL_FLAGS);
 
+			CACHE_LOG("CACHE DXSTG addr %x, index %d, way %d, DATA %x OP %x", addr, index, way, cpuRegs.CP0.n.TagLo, cpuRegs.code);
+			CACHE_LOG("WARNING: DXSTG emulation supports flags only, things will probably break");
 			break;
 		}
 
 		case 0x14: //DXWBIN (Data Cache Index WriteBack Invalidate)
 		{
 			const int index = (addr >> 6) & 0x3F;
-			const int way   = addr & 0x1;
-			CacheLine line  = { cache.sets[index].tags[way], cache.sets[index].data[way], index };
+			const int way = addr & 0x1;
+			CacheLine line = cache.lineAt(index, way);
 
+			CACHE_LOG("CACHE DXWBIN addr %x, index %d, way %d, flags %x paddr %zx", addr, index, way, line.tag.flags(), line.addr());
 			line.writeBackIfNeeded();
 			line.clear();
 			break;
 		}
 
 		case 0x7: //IXIN (Instruction Cache Index Invalidate)
+		{
 			//Not Implemented as we do not have instruction cache
+			break;
+		}
+
 		case 0xC: //BFH (BTAC Flush)
+		{
 			//Not Implemented as we do not cache Branch Target Addresses.
+			break;
+		}
+
 		default:
+			DevCon.Warning("Cache mode %x not implemented", _Rt_);
 			break;
 	}
 }

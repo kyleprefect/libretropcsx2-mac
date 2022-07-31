@@ -14,12 +14,18 @@
 
 #if wxUSE_SELECT_DISPATCHER
 
-#if defined(HAVE_SYS_SELECT_H)
+#if defined(HAVE_SYS_SELECT_H) || defined(__WATCOMC__)
     #include <sys/time.h>
     #include <sys/select.h>
 #endif
 
-#include <sys/types.h>
+#ifdef __WATCOMC__
+    #include <types.h>
+    #include <sys/ioctl.h>
+    #include <tcpustd.h>
+#else
+    #include <sys/types.h>
+#endif
 
 #include "wx/private/fdiodispatcher.h"
 
@@ -86,6 +92,7 @@ public:
 
     // implement pure virtual methods of the base class
     virtual bool RegisterFD(int fd, wxFDIOHandler *handler, int flags = wxFDIO_ALL);
+    virtual bool ModifyFD(int fd, wxFDIOHandler *handler, int flags = wxFDIO_ALL);
     virtual bool UnregisterFD(int fd);
     virtual bool HasPending() const;
     virtual int Dispatch(int timeout = TIMEOUT_INFINITE);

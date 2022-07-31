@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "fmt/core.h"
+
 // --------------------------------------------------------------------------------------
 //  BaseR5900Exception
 // --------------------------------------------------------------------------------------
@@ -31,9 +33,26 @@ class BaseR5900Exception : public Exception::Ps2Generic
 public:
 	cpuRegisters cpuState;
 
-protected:
-	void Init()
+public:
+	u32 GetPc() const override { return cpuState.pc; }
+	bool IsDelaySlot() const override { return !!cpuState.IsDelaySlot; }
+
+	std::string& Message() override { return m_message; }
+	std::string FormatMessage() const
 	{
+		return fmt::format("(EE pc:{:08X}) {}", cpuRegs.pc, m_message.c_str());
+	}
+
+protected:
+	void Init(const char* msg)
+	{
+		m_message = msg;
+		cpuState = cpuRegs;
+	}
+
+	void Init(std::string msg)
+	{
+		m_message = msg;
 		cpuState = cpuRegs;
 	}
 };
@@ -52,9 +71,9 @@ namespace R5900Exception
 		u32 Address;
 
 	protected:
-		void Init( u32 ps2addr, bool onWrite)
+		void Init( u32 ps2addr, bool onWrite, const char* msg )
 		{
-			_parent::Init();
+			_parent::Init(fmt::format("{}, addr=0x{:x} [{}]", msg, ps2addr, onWrite ? "store" : "load"));
 			OnWrite = onWrite;
 			Address = ps2addr;
 		}
@@ -66,7 +85,7 @@ namespace R5900Exception
 	public:
 		AddressError( u32 ps2addr, bool onWrite )
 		{
-			BaseAddressError::Init( ps2addr, onWrite);
+			BaseAddressError::Init( ps2addr, onWrite, "Address error" );
 		}
 	};
 
@@ -77,7 +96,7 @@ namespace R5900Exception
 	public:
 		TLBMiss( u32 ps2addr, bool onWrite )
 		{
-			BaseAddressError::Init( ps2addr, onWrite);
+			BaseAddressError::Init( ps2addr, onWrite, "TLB Miss" );
 		}
 	};
 
@@ -88,7 +107,7 @@ namespace R5900Exception
 	public:
 		BusError( u32 ps2addr, bool onWrite )
 		{
-			BaseAddressError::Init( ps2addr, onWrite);
+			BaseAddressError::Init( ps2addr, onWrite, "Bus Error" );
 		}
 	};
 
@@ -103,7 +122,7 @@ namespace R5900Exception
 		// Generates a trap for immediate-style Trap opcodes
 		Trap()
 		{
-			_parent::Init();
+			_parent::Init( "Trap" );
 			TrapCode = 0;
 		}
 
@@ -111,8 +130,19 @@ namespace R5900Exception
 		// error code in the opcode
 		explicit Trap( u16 trapcode )
 		{
-			_parent::Init(),
+			_parent::Init( "Trap" ),
 			TrapCode = trapcode;
+		}
+	};
+
+	class DebugBreakpoint : public BaseR5900Exception
+	{
+		DEFINE_EXCEPTION_COPYTORS(DebugBreakpoint, BaseR5900Exception)
+		
+	public:
+		explicit DebugBreakpoint()
+		{
+			_parent::Init( "Debug Breakpoint" );
 		}
 	};
 }

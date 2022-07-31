@@ -15,11 +15,6 @@
 
 #pragma once 
 
-#include "PS2Edefs.h"
-
-#include "DEV9/DEV9.h"
-#include "USB/USB.h"
-
 extern void psxDma2(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma3(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma6(u32 madr, u32 bcr, u32 chcr);
@@ -29,19 +24,16 @@ extern void psxDma8(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma9(u32 madr, u32 bcr, u32 chcr);
 extern void psxDma10(u32 madr, u32 bcr, u32 chcr);
 
-extern int  psxDma4Interrupt(void);
-extern int  psxDma7Interrupt(void);
-extern void dev9Interrupt(void);
+extern int  psxDma4Interrupt();
+extern int  psxDma7Interrupt();
+extern void dev9Interrupt();
 extern void dev9Irq(int cycles);
-extern void usbInterrupt(void);
+extern void usbInterrupt();
 extern void usbIrq(int cycles);
-extern void fwIrq(void);
-extern void spu2Irq(void);
-extern void spu2DMA4Irq(void);
-extern void spu2DMA7Irq(void);
+extern void fwIrq();
+extern void spu2Irq();
+extern void spu2DMA4Irq();
+extern void spu2DMA7Irq();
 
 extern void iopIntcIrq( uint irqType );
-extern void iopTestIntc(void);
-
-extern DEV9handler dev9Handler;
-extern USBhandler usbHandler;
+extern void iopTestIntc();

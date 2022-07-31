@@ -14,7 +14,11 @@
 #include "wx/defs.h"
 #include "wx/string.h"
 
-#include "wx/object.h"
+#if !wxUSE_STD_CONTAINERS
+    #include "wx/object.h"
+#else
+    class WXDLLIMPEXP_FWD_BASE wxObject;
+#endif
 
 // the default size of the hash
 #define wxHASH_SIZE_DEFAULT     (1000)
@@ -75,7 +79,9 @@ protected:
 };
 
 class WXDLLIMPEXP_BASE wxHashTableBase
+#if !wxUSE_STD_CONTAINERS
     : public wxObject
+#endif
 {
     friend class WXDLLIMPEXP_FWD_BASE wxHashTableBase_Node;
 public:

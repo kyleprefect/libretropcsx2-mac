@@ -1,5 +1,5 @@
 /*  PCSX2 - PS2 Emulator for PCs
- *  Copyright (C) 2002-2010  PCSX2 Dev Team
+ *  Copyright (C) 2002-2022  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -21,47 +21,51 @@
 #include "yuv2rgb.h"
 #include "mpeg2lib/Mpeg.h"
 
-#include "Vif.h"
-#include "Gif.h"
-#include "Vif_Dma.h"
 #include <limits.h>
-#include "AppConfig.h"
+#include "Config.h"
 
-#include "Utilities/MemsetFast.inl"
+#include "common/MemsetFast.inl"
 
 // the BP doesn't advance and returns -1 if there is no data to be read
-__aligned16 tIPU_cmd ipu_cmd;
-__aligned16 tIPU_BP g_BP;
-__aligned16 decoder_t decoder;
+alignas(16) tIPU_cmd ipu_cmd;
+alignas(16) tIPU_BP g_BP;
+alignas(16) decoder_t decoder;
 
 void IPUWorker();
 
+// Color conversion stuff, the memory layout is a total hack
+// convert_data_buffer is a pointer to the internal rgb struct (the first param in convert_init_t)
+//char convert_data_buffer[sizeof(convert_rgb_t)];
+//char convert_data_buffer[0x1C];							// unused?
+//u8 PCT[] = {'r', 'I', 'P', 'B', 'D', '-', '-', '-'};		// unused?
+
 // Quantization matrix
 static rgb16_t vqclut[16];			//clut conversion table
-static u8 s_thresh[2];				//thresholds for color conversions
+static u16 s_thresh[2];				//thresholds for color conversions
 int coded_block_pattern = 0;
 
 alignas(16) static u8 indx4[16*16/2];
 
+uint eecount_on_last_vdec = 0;
 bool FMVstarted = false;
 bool EnableFMV = false;
 
-void tIPU_cmd::clear(void)
+void tIPU_cmd::clear()
 {
 	memzero_sse_a(*this);
 	current = 0xffffffff;
 }
 
-__fi void IPUProcessInterrupt(void)
+__fi void IPUProcessInterrupt()
 {
-	if (ipuRegs.ctrl.BUSY) // && (g_BP.FP || g_BP.IFC || (ipu1ch.chcr.STR && ipu1ch.qwc > 0)))
+	if (ipuRegs.ctrl.BUSY && !CommandExecuteQueued) // && (g_BP.FP || g_BP.IFC || (ipu1ch.chcr.STR && ipu1ch.qwc > 0)))
 		IPUWorker();
 }
 
 /////////////////////////////////////////////////////////
 // Register accesses (run on EE thread)
 
-void ipuReset(void)
+void ipuReset()
 {
 	memzero(ipuRegs);
 	memzero(g_BP);
@@ -74,9 +78,25 @@ void ipuReset(void)
 	ipuDmaReset();
 }
 
+void ReportIPU()
+{
+	//Console.WriteLn(g_nDMATransfer.desc());
+	Console.WriteLn(ipu_fifo.in.desc());
+	Console.WriteLn(ipu_fifo.out.desc());
+	Console.WriteLn(g_BP.desc());
+	Console.WriteLn("vqclut = 0x%x.", vqclut);
+	Console.WriteLn("s_thresh = 0x%x.", s_thresh);
+	Console.WriteLn("coded_block_pattern = 0x%x.", coded_block_pattern);
+	Console.WriteLn("g_decoder = 0x%x.", &decoder);
+	Console.WriteLn("mpeg2_scan = 0x%x.", &mpeg2_scan);
+	Console.WriteLn(ipu_cmd.desc());
+	Console.Newline();
+}
+
 void SaveStateBase::ipuFreeze()
 {
 	// Get a report of the status of the ipu variables when saving and loading savestates.
+	//ReportIPU();
 	FreezeTag("IPU");
 	Freeze(ipu_fifo);
 
@@ -88,6 +108,81 @@ void SaveStateBase::ipuFreeze()
 	Freeze(ipu_cmd);
 }
 
+void tIPU_CMD_IDEC::log() const
+{
+	IPU_LOG("IDEC command.");
+
+	if (FB) IPU_LOG(" Skip %d	bits.", FB);
+	IPU_LOG(" Quantizer step code=0x%X.", QSC);
+
+	if (DTD == 0)
+		IPU_LOG(" Does not decode DT.");
+	else
+		IPU_LOG(" Decodes DT.");
+
+	if (SGN == 0)
+		IPU_LOG(" No bias.");
+	else
+		IPU_LOG(" Bias=128.");
+
+	if (DTE == 1) IPU_LOG(" Dither Enabled.");
+	if (OFM == 0)
+		IPU_LOG(" Output format is RGB32.");
+	else
+		IPU_LOG(" Output format is RGB16.");
+
+	IPU_LOG("");
+}
+
+void tIPU_CMD_BDEC::log(int s_bdec) const
+{
+	IPU_LOG("BDEC(macroblock decode) command %x, num: 0x%x", cpuRegs.pc, s_bdec);
+	if (FB) IPU_LOG(" Skip 0x%X bits.", FB);
+
+	if (MBI)
+		IPU_LOG(" Intra MB.");
+	else
+		IPU_LOG(" Non-intra MB.");
+
+	if (DCR)
+		IPU_LOG(" Resets DC prediction value.");
+	else
+		IPU_LOG(" Doesn't reset DC prediction value.");
+
+	if (DT)
+		IPU_LOG(" Use field DCT.");
+	else
+		IPU_LOG(" Use frame DCT.");
+
+	IPU_LOG(" Quantizer step=0x%X", QSC);
+}
+
+void tIPU_CMD_CSC::log_from_YCbCr() const
+{
+	IPU_LOG("CSC(Colorspace conversion from YCbCr) command (%d).", MBC);
+	if (OFM)
+		IPU_LOG("Output format is RGB16. ");
+	else
+		IPU_LOG("Output format is RGB32. ");
+
+	if (DTE) IPU_LOG("Dithering enabled.");
+}
+
+void tIPU_CMD_CSC::log_from_RGB32() const
+{
+	IPU_LOG("PACK (Colorspace conversion from RGB32) command.");
+
+	if (OFM)
+		IPU_LOG("Output format is RGB16. ");
+	else
+		IPU_LOG("Output format is INDX4. ");
+
+	if (DTE) IPU_LOG("Dithering enabled.");
+
+	IPU_LOG("Number of macroblocks to be converted: %d", MBC);
+}
+
+
 __fi u32 ipuRead32(u32 mem)
 {
 	// Note: It's assumed that mem's input value is always in the 0x10002000 page
@@ -95,8 +190,6 @@ __fi u32 ipuRead32(u32 mem)
 
 	pxAssert((mem & ~0xff) == 0x10002000);
 	mem &= 0xff;	// ipu repeats every 0x100
-
-	IPUProcessInterrupt();
 
 	switch (mem)
 	{
@@ -114,33 +207,39 @@ __fi u32 ipuRead32(u32 mem)
 		{
 			ipuRegs.ctrl.IFC = g_BP.IFC;
 			ipuRegs.ctrl.CBP = coded_block_pattern;
+
+			if (!ipuRegs.ctrl.BUSY)
+				IPU_LOG("read32: IPU_CTRL=0x%08X", ipuRegs.ctrl._u32);
+
 			return ipuRegs.ctrl._u32;
 		}
 
 		ipucase(IPU_BP): // IPU_BP
 		{
-			ipuRegs.ipubp  = g_BP.BP & 0x7f;
+			pxAssume(g_BP.FP <= 2);
+			
+			ipuRegs.ipubp = g_BP.BP & 0x7f;
 			ipuRegs.ipubp |= g_BP.IFC << 8;
 			ipuRegs.ipubp |= g_BP.FP << 16;
+
+			IPU_LOG("read32: IPU_BP=0x%08X", ipuRegs.ipubp);
 			return ipuRegs.ipubp;
 		}
 
 		default:
-		break;
+			IPU_LOG("read32: Addr=0x%08X Value = 0x%08X", mem, psHu32(IPU_CMD + mem));
 	}
 
 	return psHu32(IPU_CMD + mem);
 }
 
-__fi u64 ipuRead64(u32 mem)
+__fi RETURNS_R64 ipuRead64(u32 mem)
 {
 	// Note: It's assumed that mem's input value is always in the 0x10002000 page
 	// of memory (if not, it's probably bad code).
 
 	pxAssert((mem & ~0xff) == 0x10002000);
 	mem &= 0xff;	// ipu repeats every 0x100
-
-	IPUProcessInterrupt();
 
 	switch (mem)
 	{
@@ -151,44 +250,54 @@ __fi u64 ipuRead64(u32 mem)
 				if (getBits32((u8*)&ipuRegs.cmd.DATA, 0))
 					ipuRegs.cmd.DATA = BigEndian(ipuRegs.cmd.DATA);
 			}
-
-			return ipuRegs.cmd._u64;
+			
+			if (ipuRegs.cmd.DATA & 0xffffff)
+				IPU_LOG("read64: IPU_CMD=BUSY=%x, DATA=%08X", ipuRegs.cmd.BUSY ? 1 : 0, ipuRegs.cmd.DATA);
+			return r64_load(&ipuRegs.cmd._u64);
 		}
 
 		ipucase(IPU_CTRL):
+			DevCon.Warning("reading 64bit IPU ctrl");
 			break;
 
 		ipucase(IPU_BP):
+			DevCon.Warning("reading 64bit IPU top");
 			break;
 
 		ipucase(IPU_TOP): // IPU_TOP
+			IPU_LOG("read64: IPU_TOP=%x,  bp = %d", ipuRegs.top, g_BP.BP);
 			break;
 
 		default:
+			IPU_LOG("read64: Unknown=%x", mem);
 			break;
 	}
-	return psHu64(IPU_CMD + mem);
+	return r64_load(&psHu64(IPU_CMD + mem));
 }
 
-void ipuSoftReset(void)
+void ipuSoftReset()
 {
 	if (ipu1ch.chcr.STR && g_BP.IFC < 8 && IPU1Status.DataRequested)
+	{
+		DevCon.Warning("Refill input fifo on reset");
 		ipu1Interrupt();
+	}
 
 	if (!ipu1ch.chcr.STR)
 		psHu32(DMAC_STAT) &= ~(1 << DMAC_TO_IPU);
+
 
 	ipu_fifo.clear();
 	memzero(g_BP);
 
 	coded_block_pattern = 0;
 
-	ipuRegs.ctrl._u32 &= 0x7F33F00;
+	ipuRegs.ctrl.reset();
 	ipuRegs.top = 0;
 	ipu_cmd.clear();
 	ipuRegs.cmd.BUSY = 0;
 	ipuRegs.cmd.DATA = 0; // required for Enthusia - Professional Racing after fix, or will freeze at start of next video.
-
+	
 	hwIntcIrq(INTC_IPU); // required for FightBox
 }
 
@@ -203,19 +312,24 @@ __fi bool ipuWrite32(u32 mem, u32 value)
 	switch (mem)
 	{
 		ipucase(IPU_CMD): // IPU_CMD
+			IPU_LOG("write32: IPU_CMD=0x%08X", value);
 			IPUCMD_WRITE(value);
-			IPUProcessInterrupt();
-			return false;
+		return false;
 
 		ipucase(IPU_CTRL): // IPU_CTRL
             // CTRL = the first 16 bits of ctrl [0x8000ffff], + value for the next 16 bits,
             // minus the reserved bits. (18-19; 27-29) [0x47f30000]
 			ipuRegs.ctrl.write(value);
 			if (ipuRegs.ctrl.IDP == 3)
+			{
+				Console.WriteLn("IPU Invalid Intra DC Precision, switching to 9 bits");
 				ipuRegs.ctrl.IDP = 1;
+			}
 
 			if (ipuRegs.ctrl.RST) ipuSoftReset(); // RESET
-			return false;
+
+			IPU_LOG("write32: IPU_CTRL=0x%08X", value);
+		return false;
 	}
 	return true;
 }
@@ -233,8 +347,8 @@ __fi bool ipuWrite64(u32 mem, u64 value)
 	switch (mem)
 	{
 		ipucase(IPU_CMD):
+			IPU_LOG("write64: IPU_CMD=0x%08X", value);
 			IPUCMD_WRITE((u32)value);
-			IPUProcessInterrupt();
 		return false;
 	}
 
@@ -254,38 +368,45 @@ static void ipuBCLR(u32 val)
 		psHu32(DMAC_STAT) &= ~(1 << DMAC_TO_IPU);
 
 	ipu_fifo.in.clear();
-
 	memzero(g_BP);
 	g_BP.BP = val & 0x7F;
 
 	ipuRegs.cmd.BUSY = 0;
+	IPU_LOG("Clear IPU input FIFO. Set Bit offset=0x%X", g_BP.BP);
 }
 
 static __ri void ipuIDEC(tIPU_CMD_IDEC idec)
 {
-	//from IPU_CTRL
-	ipuRegs.ctrl.PCT 		= I_TYPE; //Intra DECoding;)
+	idec.log();
 
-	decoder.coding_type		= ipuRegs.ctrl.PCT;
-	decoder.mpeg1			= ipuRegs.ctrl.MP1;
+	//from IPU_CTRL
+	ipuRegs.ctrl.PCT = I_TYPE; //Intra DECoding;)
+
+	decoder.coding_type			= ipuRegs.ctrl.PCT;
+	decoder.mpeg1				= ipuRegs.ctrl.MP1;
 	decoder.q_scale_type		= ipuRegs.ctrl.QST;
 	decoder.intra_vlc_format	= ipuRegs.ctrl.IVF;
-	decoder.scantype		= ipuRegs.ctrl.AS;
+	decoder.scantype			= ipuRegs.ctrl.AS;
 	decoder.intra_dc_precision	= ipuRegs.ctrl.IDP;
 
-	//from IDEC value
+//from IDEC value
 	decoder.quantizer_scale		= idec.QSC;
-	decoder.frame_pred_frame_dct    = !idec.DTD;
-	decoder.sgn 			= idec.SGN;
-	decoder.dte 			= idec.DTE;
-	decoder.ofm 			= idec.OFM;
+	decoder.frame_pred_frame_dct= !idec.DTD;
+	decoder.sgn = idec.SGN;
+	decoder.dte = idec.DTE;
+	decoder.ofm = idec.OFM;
 
 	//other stuff
-	decoder.dcr 			= 1; // resets DC prediction value
+	decoder.dcr = 1; // resets DC prediction value
 }
+
+static int s_bdec = 0;
 
 static __ri void ipuBDEC(tIPU_CMD_BDEC bdec)
 {
+	bdec.log(s_bdec);
+	if (IsDebugBuild) s_bdec++;
+
 	decoder.coding_type			= I_TYPE;
 	decoder.mpeg1				= ipuRegs.ctrl.MP1;
 	decoder.q_scale_type		= ipuRegs.ctrl.QST;
@@ -305,16 +426,16 @@ static __ri void ipuBDEC(tIPU_CMD_BDEC bdec)
 
 static __fi bool ipuVDEC(u32 val)
 {
-	if (EmuConfig.Gamefixes.FMVinSoftwareHack) {
-		static int count = 0;
-		if (count++ > 5) {
-			if (!FMVstarted) {
-				EnableFMV = true;
-				FMVstarted = true;
-			}
-			count = 0;
+	static int count = 0;
+	if (count++ > 5) {
+		if (!FMVstarted) {
+			EnableFMV = true;
+			FMVstarted = true;
 		}
+		count = 0;
 	}
+	eecount_on_last_vdec = cpuRegs.cycle;
+
 	switch (ipu_cmd.pos[0])
 	{
 		case 0:
@@ -341,8 +462,7 @@ static __fi bool ipuVDEC(u32 val)
 					ipuRegs.cmd.DATA = get_dmv();
 					break;
 
-				default:
-					break;
+				jNO_DEFAULT
 			}
 
 			// HACK ATTACK!  This code OR's the MPEG decoder's bitstream position into the upper
@@ -357,6 +477,7 @@ static __fi bool ipuVDEC(u32 val)
 			// This is due to differences with IPU and the MPEG standard. See get_macroblock_address_increment().
 
 			ipuRegs.ctrl.ECD = (ipuRegs.cmd.DATA == 0);
+			[[fallthrough]];
 
 		case 1:
 			if (!getBits32((u8*)&ipuRegs.top, 0))
@@ -366,10 +487,14 @@ static __fi bool ipuVDEC(u32 val)
 			}
 
 			ipuRegs.top = BigEndian(ipuRegs.top);
+
+			IPU_LOG("VDEC command data 0x%x(0x%x). Skip 0x%X bits/Table=%d (%s), pct %d",
+			        ipuRegs.cmd.DATA, ipuRegs.cmd.DATA >> 16, val & 0x3f, (val >> 26) & 3, (val >> 26) & 1 ?
+			        ((val >> 26) & 2 ? "DMV" : "MBT") : (((val >> 26) & 2 ? "MC" : "MBAI")), ipuRegs.ctrl.PCT);
+
 			return true;
 
-		default:
-			break;
+		jNO_DEFAULT
 	}
 
 	return false;
@@ -381,6 +506,8 @@ static __ri bool ipuFDEC(u32 val)
 
 	ipuRegs.cmd.DATA = BigEndian(ipuRegs.cmd.DATA);
 	ipuRegs.top = ipuRegs.cmd.DATA;
+
+	IPU_LOG("FDEC read: 0x%08x", ipuRegs.top);
 
 	return true;
 }
@@ -395,6 +522,14 @@ static bool ipuSETIQ(u32 val)
 		{
 			if (!getBits64((u8*)niq + 8 * ipu_cmd.pos[0], 1)) return false;
 		}
+
+		IPU_LOG("Read non-intra quantization matrix from FIFO.");
+		for (uint i = 0; i < 8; i++)
+		{
+			IPU_LOG("%02X %02X %02X %02X %02X %02X %02X %02X",
+			        niq[i * 8 + 0], niq[i * 8 + 1], niq[i * 8 + 2], niq[i * 8 + 3],
+			        niq[i * 8 + 4], niq[i * 8 + 5], niq[i * 8 + 6], niq[i * 8 + 7]);
+		}
 	}
 	else
 	{
@@ -403,6 +538,14 @@ static bool ipuSETIQ(u32 val)
 		for(;ipu_cmd.pos[0] < 8; ipu_cmd.pos[0]++)
 		{
 			if (!getBits64((u8*)iq + 8 * ipu_cmd.pos[0], 1)) return false;
+		}
+
+		IPU_LOG("Read intra quantization matrix from FIFO.");
+		for (uint i = 0; i < 8; i++)
+		{
+			IPU_LOG("%02X %02X %02X %02X %02X %02X %02X %02X",
+			        iq[i * 8 + 0], iq[i * 8 + 1], iq[i * 8 + 2], iq[i *8 + 3],
+			        iq[i * 8 + 4], iq[i * 8 + 5], iq[i * 8 + 6], iq[i *8 + 7]);
 		}
 	}
 
@@ -416,12 +559,36 @@ static bool ipuSETVQ(u32 val)
 		if (!getBits64(((u8*)vqclut) + 8 * ipu_cmd.pos[0], 1)) return false;
 	}
 
+	IPU_LOG("SETVQ command.   Read VQCLUT table from FIFO.\n"
+	    "%02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d\n"
+	    "%02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d\n"
+	    "%02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d\n"
+	    "%02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d %02d:%02d:%02d",
+	    vqclut[0].r, vqclut[0].g, vqclut[0].b,
+	    vqclut[1].r, vqclut[1].g, vqclut[1].b,
+	    vqclut[2].r, vqclut[2].g, vqclut[2].b,
+	    vqclut[3].r, vqclut[3].g, vqclut[3].b,
+	    vqclut[4].r, vqclut[4].g, vqclut[4].b,
+	    vqclut[5].r, vqclut[5].g, vqclut[5].b,
+	    vqclut[6].r, vqclut[6].g, vqclut[6].b,
+	    vqclut[7].r, vqclut[7].g, vqclut[7].b,
+	    vqclut[8].r, vqclut[8].g, vqclut[8].b,
+	    vqclut[9].r, vqclut[9].g, vqclut[9].b,
+	    vqclut[10].r, vqclut[10].g, vqclut[10].b,
+	    vqclut[11].r, vqclut[11].g, vqclut[11].b,
+	    vqclut[12].r, vqclut[12].g, vqclut[12].b,
+	    vqclut[13].r, vqclut[13].g, vqclut[13].b,
+	    vqclut[14].r, vqclut[14].g, vqclut[14].b,
+	    vqclut[15].r, vqclut[15].g, vqclut[15].b);
+
 	return true;
 }
 
 // IPU Transfers are split into 8Qwords so we need to send ALL the data
 static __ri bool ipuCSC(tIPU_CMD_CSC csc)
 {
+	csc.log_from_YCbCr();
+
 	for (;ipu_cmd.index < (int)csc.MBC; ipu_cmd.index++)
 	{
 		for(;ipu_cmd.pos[0] < 48; ipu_cmd.pos[0]++)
@@ -430,10 +597,10 @@ static __ri bool ipuCSC(tIPU_CMD_CSC csc)
 		}
 
 		ipu_csc(decoder.mb8, decoder.rgb32, 0);
+		if (csc.OFM) ipu_dither(decoder.rgb32, decoder.rgb16, csc.DTE);
 		
 		if (csc.OFM)
 		{
-			ipu_dither(decoder.rgb32, decoder.rgb16, csc.DTE);
 			ipu_cmd.pos[1] += ipu_fifo.out.write(((u32*) & decoder.rgb16) + 4 * ipu_cmd.pos[1], 32 - ipu_cmd.pos[1]);
 			if (ipu_cmd.pos[1] < 32) return false;
 		}
@@ -452,6 +619,8 @@ static __ri bool ipuCSC(tIPU_CMD_CSC csc)
 
 static __ri bool ipuPACK(tIPU_CMD_CSC csc)
 {
+	csc.log_from_RGB32();
+
 	for (;ipu_cmd.index < (int)csc.MBC; ipu_cmd.index++)
 	{
 		for(;ipu_cmd.pos[0] < (int)sizeof(macroblock_rgb32) / 8; ipu_cmd.pos[0]++)
@@ -461,6 +630,8 @@ static __ri bool ipuPACK(tIPU_CMD_CSC csc)
 
 		ipu_dither(decoder.rgb32, decoder.rgb16, csc.DTE);
 
+		if (!csc.OFM) ipu_vq(decoder.rgb16, indx4);
+
 		if (csc.OFM)
 		{
 			ipu_cmd.pos[1] += ipu_fifo.out.write(((u32*) & decoder.rgb16) + 4 * ipu_cmd.pos[1], 32 - ipu_cmd.pos[1]);
@@ -468,7 +639,6 @@ static __ri bool ipuPACK(tIPU_CMD_CSC csc)
 		}
 		else
 		{
-			ipu_vq(decoder.rgb16, indx4);
 			ipu_cmd.pos[1] += ipu_fifo.out.write(((u32*)indx4) + 4 * ipu_cmd.pos[1], 8 - ipu_cmd.pos[1]);
 			if (ipu_cmd.pos[1] < 8) return false;
 		}
@@ -477,13 +647,14 @@ static __ri bool ipuPACK(tIPU_CMD_CSC csc)
 		ipu_cmd.pos[1] = 0;
 	}
 
-	return TRUE;
+	return true;
 }
 
 static void ipuSETTH(u32 val)
 {
 	s_thresh[0] = (val & 0x1ff);
 	s_thresh[1] = ((val >> 16) & 0x1ff);
+	IPU_LOG("SETTH (Set threshold value)command %x.", val&0x1ff01ff);
 }
 
 // --------------------------------------------------------------------------------------
@@ -517,7 +688,9 @@ __fi void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn)
 	if (sgn)
 	{
 		for (i = 0; i < 16*16; i++, p += 4)
+		{
 			*(u32*)p ^= 0x808080;
+		}
 	}
 }
 
@@ -596,7 +769,9 @@ u8 getBits64(u8 *address, bool advance)
 		*(u64*)address = ((~mask & *(u64*)(readpos + 1)) >> (8 - shift)) | (((mask) & *(u64*)readpos) << shift);
 	}
 	else
+	{
 		*(u64*)address = *(u64*)readpos;
+	}
 
 	if (advance) g_BP.Advance(64);
 
@@ -642,7 +817,9 @@ __fi u8 getBits16(u8 *address, bool advance)
 		*(u16*)address = ((~mask & *(u16*)(readpos + 1)) >> (8 - shift)) | (((mask) & *(u16*)readpos) << shift);
 	}
 	else
+	{
 		*(u16*)address = *(u16*)readpos;
+	}
 
 	if (advance) g_BP.Advance(16);
 
@@ -661,7 +838,9 @@ u8 getBits8(u8 *address, bool advance)
 		*(u8*)address = (((~mask) & readpos[1]) >> (8 - shift)) | (((mask) & *readpos) << shift);
 	}
 	else
+	{
 		*(u8*)address = *(u8*)readpos;
+	}
 
 	if (advance) g_BP.Advance(8);
 
@@ -676,6 +855,9 @@ u8 getBits8(u8 *address, bool advance)
 // The actual decoding will be handled by IPUworker.
 __fi void IPUCMD_WRITE(u32 val)
 {
+	// don't process anything if currently busy
+	//if (ipuRegs.ctrl.BUSY) Console.WriteLn("IPU BUSY!"); // wait for thread
+
 	ipuRegs.ctrl.ECD = 0;
 	ipuRegs.ctrl.SCD = 0;
 	ipu_cmd.clear();
@@ -697,7 +879,6 @@ __fi void IPUCMD_WRITE(u32 val)
 			ipuRegs.ctrl.BUSY = 0;
 			return;
 
-
 		case SCE_IPU_IDEC:
 			g_BP.Advance(val & 0x3F);
 			ipuIDEC(val);
@@ -716,11 +897,14 @@ __fi void IPUCMD_WRITE(u32 val)
 			break;
 
 		case SCE_IPU_FDEC:
+			IPU_LOG("FDEC command. Skip 0x%X bits, FIFO 0x%X qwords, BP 0x%X, CHCR 0x%x",
+			        val & 0x3f, g_BP.IFC, g_BP.BP, ipu1ch.chcr._u32);
 			g_BP.Advance(val & 0x3F);
 			ipuRegs.SetDataBusy();
 			break;
 
 		case SCE_IPU_SETIQ:
+			IPU_LOG("SETIQ command.");
 			g_BP.Advance(val & 0x3F);
 			break;
 
@@ -733,11 +917,20 @@ __fi void IPUCMD_WRITE(u32 val)
 		case SCE_IPU_PACK:
 			break;
 
-		default:
-			break;
-	}
+		jNO_DEFAULT;
+			}
 
 	ipuRegs.ctrl.BUSY = 1;
+
+	// Have a short delay immitating the time it takes to run IDEC/BDEC, other commands are near instant.
+	// Mana Khemia/Metal Saga start IDEC then change IPU0 expecting there to be a delay before IDEC sends data.
+	if (!CommandExecuteQueued && (ipu_cmd.CMD == SCE_IPU_IDEC || ipu_cmd.CMD == SCE_IPU_BDEC))
+	{
+		CommandExecuteQueued = true;
+		CPU_INT(IPU_PROCESS, 64);
+	}
+	else
+		IPUWorker();
 }
 
 __noinline void IPUWorker()
@@ -749,7 +942,7 @@ __noinline void IPUWorker()
 		// These are unreachable (BUSY will always be 0 for them)
 		//case SCE_IPU_BCLR:
 		//case SCE_IPU_SETTH:
-		//break;
+			//break;
 
 		case SCE_IPU_IDEC:
 			if (!mpeg2sliceIDEC()) return;
@@ -803,11 +996,12 @@ __noinline void IPUWorker()
 			if (!ipuPACK(ipu_cmd.current)) return;
 			break;
 
-		default:
-			break;
-	}
+		jNO_DEFAULT
+			}
 
 	// success
+	IPU_LOG("IPU Command finished");
 	ipuRegs.ctrl.BUSY = 0;
+	//ipu_cmd.current = 0xffffffff;
 	hwIntcIrq(INTC_IPU);
 }

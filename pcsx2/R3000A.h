@@ -115,7 +115,7 @@ struct psxRegisters {
 	//u32 _smflag[32];
 };
 
-extern __aligned16 psxRegisters psxRegs;
+alignas(16) extern psxRegisters psxRegs;
 
 extern u32 g_iopNextEventCycle;
 extern s32 iopBreak;		// used when the IOP execution is broken and control returned to the EE
@@ -135,13 +135,13 @@ extern s32 iopCycleEE;		// tracks IOP's current sych status with the EE
 /**** R3000A Instruction Macros ****/
 #define _PC_       psxRegs.pc       // The next PC to be executed
 
-#define _Funct_			((psxRegs.code      ) & 0x3F)  // The funct part of the instruction register
-#define _Rd_			((psxRegs.code >> 11) & 0x1F)  // The rd part of the instruction register
-#define _Rt_			((psxRegs.code >> 16) & 0x1F)  // The rt part of the instruction register
-#define _Rs_			((psxRegs.code >> 21) & 0x1F)  // The rs part of the instruction register
-#define _Sa_			((psxRegs.code >>  6) & 0x1F)  // The sa part of the instruction register
-#define _Im_			((u16)psxRegs.code) // The immediate part of the instruction register
-#define _InstrucTarget_ (psxRegs.code & 0x03ffffff)    // The target part of the instruction register
+#define _Funct_          ((psxRegs.code      ) & 0x3F)  // The funct part of the instruction register
+#define _Rd_             ((psxRegs.code >> 11) & 0x1F)  // The rd part of the instruction register
+#define _Rt_             ((psxRegs.code >> 16) & 0x1F)  // The rt part of the instruction register
+#define _Rs_             ((psxRegs.code >> 21) & 0x1F)  // The rs part of the instruction register
+#define _Sa_             ((psxRegs.code >>  6) & 0x1F)  // The sa part of the instruction register
+#define _Im_             ((u16)psxRegs.code) // The immediate part of the instruction register
+#define _InstrucTarget_  (psxRegs.code & 0x03ffffff)    // The target part of the instruction register
 
 #define _Imm_	((short)psxRegs.code) // sign-extended immediate
 #define _ImmU_	(psxRegs.code&0xffff) // zero-extended immediate
@@ -185,7 +185,6 @@ extern bool iopIsDelaySlot;
 struct R3000Acpu {
 	void (*Reserve)();
 	void (*Reset)();
-	void (*Execute)();
 	s32 (*ExecuteBlock)( s32 eeCycles );		// executes the given number of EE cycles.
 	void (*Clear)(u32 Addr, u32 Size);
 	void (*Shutdown)();
@@ -199,9 +198,12 @@ extern R3000Acpu psxInt;
 extern R3000Acpu psxRec;
 
 extern void psxReset();
-extern void __fastcall psxException(u32 code, u32 step);
+extern void psxException(u32 code, u32 step);
 extern void iopEventTest();
 extern void psxMemReset();
+
+int psxIsBreakpointNeeded(u32 addr);
+int psxIsMemcheckNeeded(u32 pc);
 
 // Subsets
 extern void (*psxBSC[64])();
@@ -212,6 +214,6 @@ extern void (*psxCP2[64])();
 extern void (*psxCP2BSC[32])();
 
 extern void psxBiosReset();
-extern bool __fastcall psxBiosCall();
+extern bool psxBiosCall();
 
 #endif /* __R3000A_H__ */

@@ -15,12 +15,24 @@
 // For compilers that support precompilation, includes "wx.h".
 #include  "wx/wxprec.h"
 
+#ifdef __BORLANDC__
+    #pragma hdrstop
+#endif
+
 #ifndef WX_PRECOMP
     #include "wx/dynarray.h"
+    #include "wx/intl.h"
 #endif //WX_PRECOMP
 
 #include <stdlib.h>
 #include <string.h> // for memmove
+
+#if !wxUSE_STD_CONTAINERS
+
+// we cast the value to long from which we cast it to void * in IndexForInsert:
+// this can't work if the pointers are not big enough
+wxCOMPILE_TIME_ASSERT( sizeof(wxUIntPtr) <= sizeof(void *),
+                       wxArraySizeOfPtrLessSizeOfLong ); // < 32 symbols
 
 // ============================================================================
 // constants
@@ -240,6 +252,10 @@ void name::Add(T lItem, size_t nInsert)                                     \
 /* add item at the given position */                                        \
 void name::Insert(T lItem, size_t nIndex, size_t nInsert)                   \
 {                                                                           \
+  wxCHECK_RET( nIndex <= m_nCount, wxT("bad index in wxArray::Insert") );   \
+  wxCHECK_RET( m_nCount <= m_nCount + nInsert,                              \
+               wxT("array size overflow in wxArray::Insert") );             \
+                                                                            \
   if (nInsert == 0)                                                         \
       return;                                                               \
   Grow(nInsert);                                                            \
@@ -292,6 +308,9 @@ int name::Index(T lItem, CMPFUNC fnCompare) const                           \
 /* removes item from array (by index) */                                    \
 void name::RemoveAt(size_t nIndex, size_t nRemove)                          \
 {                                                                           \
+  wxCHECK_RET( nIndex < m_nCount, wxT("bad index in wxArray::RemoveAt") );  \
+  wxCHECK_RET( nIndex + nRemove <= m_nCount,                                \
+               wxT("removing too many elements in wxArray::RemoveAt") );    \
                                                                             \
   memmove(&m_pItems[nIndex], &m_pItems[nIndex + nRemove],                   \
           (m_nCount - nIndex - nRemove)*sizeof(T));                         \
@@ -303,6 +322,8 @@ void name::Remove(T lItem)                                                  \
 {                                                                           \
   int iIndex = Index(lItem);                                                \
                                                                             \
+  wxCHECK_RET( iIndex != wxNOT_FOUND,                                       \
+               wxT("removing inexistent item in wxArray::Remove") );        \
                                                                             \
   RemoveAt((size_t)iIndex);                                                 \
 }                                                                           \
@@ -346,6 +367,130 @@ void name::insert(iterator it, const_iterator first, const_iterator last)   \
   m_nCount += nInsert;                                                      \
 }
 
+#ifdef __INTELC__
+    #pragma warning(push)
+    #pragma warning(disable: 1684)
+    #pragma warning(disable: 1572)
+#endif
+
 _WX_DEFINE_BASEARRAY(const void *, wxBaseArrayPtrVoid)
 _WX_DEFINE_BASEARRAY(char,         wxBaseArrayChar)
+_WX_DEFINE_BASEARRAY(short,        wxBaseArrayShort)
 _WX_DEFINE_BASEARRAY(int,          wxBaseArrayInt)
+_WX_DEFINE_BASEARRAY(long,         wxBaseArrayLong)
+_WX_DEFINE_BASEARRAY(size_t,       wxBaseArraySizeT)
+_WX_DEFINE_BASEARRAY(double,       wxBaseArrayDouble)
+
+#ifdef __INTELC__
+    #pragma warning(pop)
+#endif
+
+#else // wxUSE_STD_CONTAINERS
+
+#include "wx/arrstr.h"
+
+#include "wx/beforestd.h"
+#include <functional>
+#include "wx/afterstd.h"
+
+// some compilers (Sun CC being the only known example) distinguish between
+// extern "C" functions and the functions with C++ linkage and ptr_fun and
+// wxStringCompareLess can't take wxStrcmp/wxStricmp directly as arguments in
+// this case, we need the wrappers below to make this work
+struct wxStringCmp
+{
+    typedef wxString first_argument_type;
+    typedef wxString second_argument_type;
+    typedef int result_type;
+
+    int operator()(const wxString& s1, const wxString& s2) const
+    {
+        return s1.compare(s2);
+    }
+};
+
+struct wxStringCmpNoCase
+{
+    typedef wxString first_argument_type;
+    typedef wxString second_argument_type;
+    typedef int result_type;
+
+    int operator()(const wxString& s1, const wxString& s2) const
+    {
+        return s1.CmpNoCase(s2);
+    }
+};
+
+int wxArrayString::Index(const wxString& str, bool bCase, bool WXUNUSED(bFromEnd)) const
+{
+    wxArrayString::const_iterator it;
+
+    if (bCase)
+    {
+        it = std::find_if(begin(), end(),
+                          std::not1(
+                              std::bind2nd(
+                                  wxStringCmp(), str)));
+    }
+    else // !bCase
+    {
+        it = std::find_if(begin(), end(),
+                          std::not1(
+                              std::bind2nd(
+                                  wxStringCmpNoCase(), str)));
+    }
+
+    return it == end() ? wxNOT_FOUND : it - begin();
+}
+
+template<class F>
+class wxStringCompareLess
+{
+public:
+    wxStringCompareLess(F f) : m_f(f) { }
+    bool operator()(const wxString& s1, const wxString& s2)
+        { return m_f(s1, s2) < 0; }
+private:
+    F m_f;
+};
+
+template<class F>
+wxStringCompareLess<F> wxStringCompare(F f)
+{
+    return wxStringCompareLess<F>(f);
+}
+
+void wxArrayString::Sort(CompareFunction function)
+{
+    std::sort(begin(), end(), wxStringCompare(function));
+}
+
+void wxArrayString::Sort(bool reverseOrder)
+{
+    if (reverseOrder)
+    {
+        std::sort(begin(), end(), std::greater<wxString>());
+    }
+    else
+    {
+        std::sort(begin(), end());
+    }
+}
+
+int wxSortedArrayString::Index(const wxString& str,
+                               bool WXUNUSED_UNLESS_DEBUG(bCase),
+                               bool WXUNUSED_UNLESS_DEBUG(bFromEnd)) const
+{
+    wxASSERT_MSG( bCase && !bFromEnd,
+                  "search parameters ignored for sorted array" );
+
+    wxSortedArrayString::const_iterator
+        it = std::lower_bound(begin(), end(), str, wxStringCompare(wxStringCmp()));
+
+    if ( it == end() || str.Cmp(*it) != 0 )
+        return wxNOT_FOUND;
+
+    return it - begin();
+}
+
+#endif // !wxUSE_STD_CONTAINERS/wxUSE_STD_CONTAINERS

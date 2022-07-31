@@ -12,6 +12,8 @@
 #ifndef _WX_RTTIH__
 #define _WX_RTTIH__
 
+#if !wxUSE_EXTENDED_RTTI     // XTI system is meant to replace these macros
+
 // ----------------------------------------------------------------------------
 // headers
 // ----------------------------------------------------------------------------
@@ -39,6 +41,7 @@ typedef wxObject *(*wxObjectConstructorFn)(void);
 class WXDLLIMPEXP_BASE wxClassInfo
 {
     friend class WXDLLIMPEXP_FWD_BASE wxObject;
+    friend WXDLLIMPEXP_BASE wxObject *wxCreateDynamicObject(const wxString& name);
 public:
     wxClassInfo( const wxChar *className,
                  const wxClassInfo *baseInfo1,
@@ -60,6 +63,7 @@ public:
 
     wxObject *CreateObject() const
         { return m_objectConstructor ? (*m_objectConstructor)() : 0; }
+    bool IsDynamic() const { return (NULL != m_objectConstructor); }
 
     const wxChar       *GetClassName() const { return m_className; }
     const wxChar       *GetBaseClassName1() const
@@ -74,6 +78,7 @@ public:
         { return m_objectConstructor; }
     static const wxClassInfo  *GetFirst() { return sm_first; }
     const wxClassInfo         *GetNext() const { return m_next; }
+    static wxClassInfo        *FindClass(const wxString& className);
 
         // Climb upwards through inheritance hierarchy.
         // Dual inheritance is catered for.
@@ -113,6 +118,8 @@ protected:
 
     wxDECLARE_NO_COPY_CLASS(wxClassInfo);
 };
+
+WXDLLIMPEXP_BASE wxObject *wxCreateDynamicObject(const wxString& name);
 
 // ----------------------------------------------------------------------------
 // Dynamic class macros
@@ -308,4 +315,5 @@ protected:
 
 #define wxEMPTY_HANDLERS_TABLE(name) wxEMPTY_PARAMETER_VALUE
 
+#endif // !wxUSE_EXTENDED_RTTI
 #endif // _WX_RTTIH__

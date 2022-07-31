@@ -16,7 +16,7 @@
 #ifndef __SIF_H__
 #define __SIF_H__
 
-#define FIFO_SIF_W 128
+static const int FIFO_SIF_W = 128;
 
 // Despite its name, this is actually the IOP's DMAtag, which itself also contains
 // the EE's DMAtag in its upper 64 bits.  Note that only the lower 24 bits of 'data' is
@@ -48,22 +48,33 @@ struct sifFifo
 	{
 		if (words > 0)
 		{
+			if ((FIFO_SIF_W - size) < words)
+				DevCon.Warning("Not enough space in SIF0 FIFO!\n");
+
+			if (size < 4)
+			{
+				u32 amt = std::min(4 - size, words);
+				memcpy(&junk[size], from, amt << 2);
+			}
+
 			const int wP0 = std::min((FIFO_SIF_W - writePos), words);
 			const int wP1 = words - wP0;
-			if (size < 4)
-				memcpy(&junk[size], from, (4 - size) << 2);
+
 			memcpy(&data[writePos], from, wP0 << 2);
 			memcpy(&data[0], &from[wP0], wP1 << 2);
 
 			writePos = (writePos + words) & (FIFO_SIF_W - 1);
 			size += words;
 		}
+		SIF_LOG("  SIF + %d = %d (pos=%d)", words, size, writePos);
 	}
 
 	void writeJunk(int words)
 	{
 		if (words > 0)
 		{
+			if ((FIFO_SIF_W - size) < words)
+				DevCon.Warning("Not enough Junk space in SIF0 FIFO!\n");
 			const int wP0 = std::min((FIFO_SIF_W - writePos), words);
 			const int wP1 = words - wP0;
 
@@ -73,6 +84,7 @@ struct sifFifo
 			writePos = (writePos + words) & (FIFO_SIF_W - 1);
 			size += words;
 		}
+		SIF_LOG("  SIF + %d = %d (pos=%d)", words, size, writePos);
 	}
 
 	void read(u32 *to, int words)
@@ -88,6 +100,7 @@ struct sifFifo
 			readPos = (readPos + words) & (FIFO_SIF_W - 1);
 			size -= words;
 		}
+		SIF_LOG("  SIF - %d = %d (pos=%d)", words, size, readPos);
 	}
 	void clear()
 	{
@@ -122,7 +135,7 @@ struct sif_iop
 	bool busy;
 
 	s32 cycles;
-	u32 writeJunk;
+	s32 writeJunk;
 
 	s32 counter; // Used to keep track of how much is left in IOP.
 	struct sifData data; // Only used in IOP.

@@ -38,6 +38,8 @@ without proper emulation of the cdvd status flag it also tends to break things.
 
 */
 
+/* Old IRQ structure
+
 enum CdvdIrqId
 {
 	Irq_None = 0,
@@ -49,28 +51,57 @@ enum CdvdIrqId
 	Irq_NotReady
 
 };
+*/
 
-/* is cdvd.Status only for NCMDS? (linuzappz) */
-/* cdvd.Status is a construction site as of now (rama)*/
+enum CdvdIrqId
+{
+	Irq_None = 0,
+	Irq_CommandComplete = 0,
+	Irq_POffReady = 2,
+	Irq_Eject,
+	Irq_BSPower, //PS1 IRQ not used
+};
+
+/* Cdvd.Status bits and their meaning
+0x0 = Stop
+0x1 = Tray Open
+0x2 = Spindle Motor Spinning
+0x4 = Reading disc
+0x8 = Ready but not reading
+0x10 = Seeking
+0x20 = Abnormal Termination
+*/
 enum cdvdStatus
 {
-	//CDVD_STATUS_NONE            = 0x00, // not sure ;)
-	//CDVD_STATUS_SEEK_COMPLETE   = 0x0A,
 	CDVD_STATUS_STOP = 0x00,
 	CDVD_STATUS_TRAY_OPEN = 0x01, // confirmed to be tray open
 	CDVD_STATUS_SPIN = 0x02,
 	CDVD_STATUS_READ = 0x06,
-	CDVD_STATUS_PAUSE = 0x0A, // neutral value. Recommended to never rely on this.
+	CDVD_STATUS_PAUSE = 0x0A,
 	CDVD_STATUS_SEEK = 0x12,
 	CDVD_STATUS_EMERGENCY = 0x20,
 };
 
+/* from PS2Tek https://psi-rockin.github.io/ps2tek/#cdvdioports
+1F402005h N command status (R)
+  0     Error (1=error occurred)
+  1     Unknown/unused
+  2     DEV9 device connected (1=HDD/network adapter connected)
+  3     Unknown/unused
+  4     Test mode
+  5     Power off ready
+  6     Drive status (1=ready)
+  7     Busy executing NCMD
+
+*/
 enum cdvdready
 {
-	CDVD_NOTREADY = 0x00,
-	CDVD_READY1 = 0x40,
-	CDVD_READY2 = 0x4e // This is used in a few places for some reason.
-					   //It would be worth checking if this was just a typo made at some point.
+	CDVD_DRIVE_ERROR = 0x01,
+	CDVD_DRIVE_DEV9CON = 0x04,
+	CDVD_DRIVE_MECHA_INIT = 0x8,
+	CDVD_DRIVE_PWOFF = 0x20,
+	CDVD_DRIVE_READY = 0x40,
+	CDVD_DRIVE_BUSY = 0x80,
 };
 
 // Cdvd actions tell the emulator how and when to respond to certain requests.
@@ -81,7 +112,7 @@ enum cdvdActions
 	cdvdAction_Seek,
 	cdvdAction_Standby,
 	cdvdAction_Stop,
-	cdvdAction_Break,
+	cdvdAction_Error,
 	cdvdAction_Read // note: not used yet.
 };
 
@@ -123,8 +154,17 @@ static const uint tbl_ContigiousSeekDelta[3] =
 // concerned with accurate(ish) seek delays and less concerned with actual block read speeds.
 // Translation: it's a minor speedhack :D
 
-static const uint PSX_CD_READSPEED = 153600;   // 1 Byte Time @ x1 (150KB = cd x 1)
-static const uint PSX_DVD_READSPEED = 1382400; // 1 Byte Time @ x1 (1350KB = dvd x 1).
+static const uint PSX_CD_READSPEED = 153600;   // Bytes per second, rough values from outer CD (CAV).
+static const uint PSX_DVD_READSPEED = 1382400; // Bytes per second, rough values from outer DVD (CAV).
+
+static const uint CD_SECTORS_PERSECOND = 75;
+static const uint DVD_SECTORS_PERSECOND = 675;
+
+static const uint CD_MIN_ROTATION_X1 = 214;
+static const uint CD_MAX_ROTATION_X1 = 497;
+
+static const uint DVD_MIN_ROTATION_X1 = 570;
+static const uint DVD_MAX_ROTATION_X1 = 1515;
 
 // Legacy Note: FullSeek timing causes many games to load very slow, but it likely not the real problem.
 // Games breaking with it set to PSXCLK*40 : "wrath unleashed" and "Shijou Saikyou no Deshi Kenichi".
@@ -157,8 +197,8 @@ static const char* nCmdName[0x100] = {
 
 enum nCmds
 {
-	N_CD_SYNC = 0x00,          // CdSync
-	N_CD_NOP = 0x01,           // CdNop
+	N_CD_NOP = 0x00,           // CdNop
+	N_CD_RESET = 0x01,         // CdReset
 	N_CD_STANDBY = 0x02,       // CdStandby
 	N_CD_STOP = 0x03,          // CdStop
 	N_CD_PAUSE = 0x04,         // CdPause
@@ -236,6 +276,18 @@ static NVMLayout nvmlayouts[NVM_FORMAT_MAX] =
 	{
 		{0x000, 0x280, 0x300, 0x200, 0x1C8, 0x1C0, 0x1A0, 0x180, 0x198}, // eeproms from bios v0.00 and up
 		{0x146, 0x270, 0x2B0, 0x200, 0x1C8, 0x1E0, 0x1B0, 0x180, 0x198}, // eeproms from bios v1.70 and up
+};
+
+static u8 biosLangDefaults[8][16] =
+{
+	{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // T10K (Japanese, generally gets overridden)
+	{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Test (Japanese, as above)
+	{0x20, 0x20, 0x80, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30}, // Japan (Japanese)
+	{0x30, 0x21, 0x80, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41}, // USA (English)
+	{0x30, 0x21, 0x80, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41}, // Europe (English)
+	{0x30, 0x21, 0x80, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41}, // HongKong (English)
+	{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Free  (Japanese, no examples to use)
+	{0x30, 0x2B, 0x80, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4B}, // China (Simplified Chinese)
 };
 
 #endif
